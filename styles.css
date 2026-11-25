@@ -1,4 +1,4 @@
-/* =====================================================================
+﻿/* =====================================================================
    Gym Log — modern glass UI with a touch of neon / acid.
    Theme lives in the variables below.
    ===================================================================== */
@@ -409,3 +409,48 @@ svg.i { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round
 .hero-link svg { width: 20px; height: 20px; color: var(--cyan); }
 .hero-link span:not(.go) { flex: 1; }
 .hint-box { margin-top: 14px; padding: 13px 14px; border-radius: 16px; background: rgba(139, 92, 255, .12); border: 1px dashed rgba(139, 92, 255, .5); font-size: 14px; line-height: 1.45; }
+
+/* ---------- Muscle map ---------- */
+.bodymap { display: block; width: 100%; height: auto; }
+.bodymap .bm { fill: #1f2331; }
+.bodymap .mu { fill: #343a4f; stroke: #06070c; stroke-width: .6; transition: fill .3s; }
+.bodymap .mu.hot { filter: drop-shadow(0 0 2.5px rgba(255, 40, 72, .75)); }
+.bm-wrap { max-width: 300px; margin: 10px auto 0; }
+.bm-wrap.sm { max-width: 220px; }
+.bm-cap { display: flex; justify-content: space-around; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.mlist { margin-top: 12px; display: grid; gap: 2px; }
+.mrow { display: grid; grid-template-columns: 10px minmax(0, 1fr) 56px 118px; align-items: center; gap: 8px; padding: 6px 0; font-size: 14px; }
+.mrow.off { color: var(--muted); }
+.mdot { width: 10px; height: 10px; border-radius: 50%; }
+.mbar { height: 6px; border-radius: 99px; background: rgba(255, 255, 255, .07); overflow: hidden; }
+.mbar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #7a2236, #ff2848); }
+.mval { font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
+.card-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.seg.mini { padding: 3px; }
+.seg.mini button { height: 30px; padding: 0 10px; font-size: 12px; flex: none; }
+
+.mcard { display: flex; align-items: center; gap: 14px; padding: 12px 16px; }
+.mcard-map { width: 120px; flex: none; }
+.mcard-t { flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; gap: 6px; padding-right: 14px; }
+.mcard-t .go { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
+.mcard-l { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.dot-r { width: 9px; height: 9px; border-radius: 50%; background: #ff2848; box-shadow: 0 0 8px #ff2848; flex: none; }
+
+.ex-h { align-items: center; }
+.ex-ht { flex: 1; min-width: 0; }
+.ex-map { width: 62px; flex: none; padding: 4px 2px; border: 1px solid var(--stroke); border-radius: 14px; background: rgba(255, 255, 255, .03); }
+.tech { display: inline-block; margin-top: 4px; font-size: 12px; font-weight: 700; color: var(--cyan); }
+.last .delta { margin-left: 6px; }
+.item-b { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.mchip { border: 1px solid var(--stroke); background: rgba(255, 255, 255, .05); border-radius: 999px; padding: 6px 12px; font-size: 13px; color: #c9cddb; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wtrend { font-size: 12px; color: var(--muted); }
+.chip.half { border-color: rgba(255, 40, 72, .5); background: rgba(255, 40, 72, .1); }
+.msheet .chips { justify-content: center; }
+.msheet .chip.on { background: rgba(255, 40, 72, .22); border-color: #ff2848; box-shadow: 0 0 14px rgba(255, 40, 72, .35); }
+
+/* Per-set weights in the program editor */
+.item-ws { margin-top: 10px; }
+.ws-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); gap: 6px; margin-top: 6px; }
+.ws-row label { position: relative; }
+.ws-row i { position: absolute; top: 4px; left: 8px; font-style: normal; font-size: 10px; color: var(--muted); pointer-events: none; }
+.ws-row .in { padding-top: 8px; }

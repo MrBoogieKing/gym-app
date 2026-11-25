@@ -230,13 +230,202 @@ function weekStreak() {
   return n;
 }
 
+/* ---------- Muscles ---------- */
+const MUSCLES = {
+  chest: 'Груди', shoulders: 'Плечі', biceps: 'Біцепс', triceps: 'Трицепс', forearms: 'Передпліччя',
+  abs: 'Прес', obliques: 'Косі м’язи', traps: 'Трапеції', lats: 'Спина', lowerback: 'Поперек',
+  glutes: 'Сідниці', quads: 'Квадрицепс', hamstrings: 'Біцепс стегна', calves: 'Литки',
+};
+
+// Known exercises: primary muscle = 1, secondary = 0.3–0.8
+const EX_MUSCLES = {
+  'жим лежачи': { chest: 1, triceps: 0.5, shoulders: 0.5 },
+  'жим гантелей лежачи': { chest: 1, triceps: 0.5, shoulders: 0.5 },
+  'жим на похилій лаві': { chest: 1, shoulders: 0.6, triceps: 0.5 },
+  'розведення гантелей лежачи': { chest: 1, shoulders: 0.3 },
+  'армійський жим': { shoulders: 1, triceps: 0.5, traps: 0.3 },
+  'жим гантелей сидячи': { shoulders: 1, triceps: 0.5 },
+  'розведення гантелей в сторони': { shoulders: 1, traps: 0.3 },
+  'віджимання на брусах': { triceps: 1, chest: 0.8, shoulders: 0.5 },
+  'французький жим': { triceps: 1 },
+  'розгинання рук на блоці': { triceps: 1 },
+  'підтягування': { lats: 1, biceps: 0.6, forearms: 0.3 },
+  'тяга штанги в нахилі': { lats: 1, traps: 0.5, biceps: 0.5, lowerback: 0.4 },
+  'тяга гантелі однією рукою': { lats: 1, biceps: 0.5 },
+  'тяга верхнього блоку': { lats: 1, biceps: 0.5 },
+  'тяга горизонтального блоку': { lats: 1, traps: 0.5, biceps: 0.4 },
+  'face pull': { shoulders: 0.8, traps: 0.7 },
+  'підйом штанги на біцепс': { biceps: 1, forearms: 0.5 },
+  'молотки з гантелями': { biceps: 0.8, forearms: 0.8 },
+  'присідання зі штангою': { quads: 1, glutes: 0.8, hamstrings: 0.3, lowerback: 0.3 },
+  'фронтальні присідання': { quads: 1, glutes: 0.5, abs: 0.3 },
+  'станова тяга': { lowerback: 1, hamstrings: 0.8, glutes: 0.8, traps: 0.5, lats: 0.4, forearms: 0.4 },
+  'румунська тяга': { hamstrings: 1, glutes: 0.7, lowerback: 0.5 },
+  'жим ногами': { quads: 1, glutes: 0.6 },
+  'випади': { quads: 1, glutes: 0.8, hamstrings: 0.3 },
+  'розгинання ніг': { quads: 1 },
+  'згинання ніг': { hamstrings: 1 },
+  'підйом на носки': { calves: 1 },
+  'планка': { abs: 1, obliques: 0.5 },
+  'скручування': { abs: 1, obliques: 0.3 },
+};
+
+// Guess for custom exercise names: first matching rule wins
+const MUSCLE_RULES = [
+  [/жим ног|leg press/, { quads: 1, glutes: 0.6 }],
+  [/присід|squat|гакк/, { quads: 1, glutes: 0.8 }],
+  [/станов|deadlift/, { lowerback: 1, hamstrings: 0.8, glutes: 0.8 }],
+  [/румунськ|rdl|мертв/, { hamstrings: 1, glutes: 0.7 }],
+  [/випад|lunge|болгарськ/, { quads: 1, glutes: 0.8 }],
+  [/розгинання ніг|leg ext/, { quads: 1 }],
+  [/згинання ніг|leg curl/, { hamstrings: 1 }],
+  [/носк|литк|calf/, { calves: 1 }],
+  [/сідниц|ягодиц|glute|міст|hip thrust|відведення ніг/, { glutes: 1 }],
+  [/французьк|трицепс|tricep|розгинання рук|брус|dip/, { triceps: 1 }],
+  [/біцепс|bicep|curl|молот/, { biceps: 1, forearms: 0.4 }],
+  [/підтяг|pull.?up|верхн|тяга|row|пуловер/, { lats: 1, biceps: 0.5 }],
+  [/шраг|трапец|shrug/, { traps: 1 }],
+  [/гіперекст|поперек|back ext/, { lowerback: 1, glutes: 0.5 }],
+  [/розведення.*(лежач|лав)|кросовер|бабочк|метелик|fly/, { chest: 1 }],
+  [/розведення|махи|дельт|плеч|армійськ|над голов|сидяч|стоячи|shoulder|lateral|overhead/, { shoulders: 1, triceps: 0.3 }],
+  [/жим|лав|bench|груд|віджиман|push.?up/, { chest: 1, triceps: 0.5, shoulders: 0.4 }],
+  [/прес|скруч|планк|crunch|abs|підйом ніг/, { abs: 1, obliques: 0.4 }],
+  [/кос|oblique/, { obliques: 1 }],
+  [/передпліч|ястк|wrist|farmer/, { forearms: 1 }],
+];
+
+function guessMuscles(name) {
+  const n = (name || '').toLowerCase().trim();
+  if (EX_MUSCLES[n]) return EX_MUSCLES[n];
+  for (const [re, m] of MUSCLE_RULES) if (re.test(n)) return m;
+  return {};
+}
+const exMuscles = (exId) => { const e = exById(exId); return e?.muscles || guessMuscles(e?.name); };
+
+// Weighted sets per muscle for a list of workouts → { muscle: { sets, last } }
+function muscleLoad(workouts) {
+  const out = {};
+  for (const w of workouts) for (const e of w.exercises) {
+    for (const [m, k] of Object.entries(exMuscles(e.exerciseId))) {
+      const o = (out[m] ||= { sets: 0, last: 0 });
+      o.sets += e.sets.length * k;
+      o.last = Math.max(o.last, w.startedAt);
+    }
+  }
+  return out;
+}
+function loadLevels(load) {
+  const max = Math.max(0, ...Object.values(load).map((o) => o.sets));
+  return Object.fromEntries(Object.entries(load).map(([m, o]) => [m, max ? o.sets / max : 0]));
+}
+
+function heat(t) {
+  if (!t) return null;
+  const k = Math.pow(Math.min(1, Math.max(0.12, t)), 0.75);
+  const a = [78, 34, 52], b = [255, 40, 72];
+  return `rgb(${a.map((x, i) => Math.round(x + (b[i] - x) * k)).join(',')})`;
+}
+
+// Stylised front + back figure; levels: { muscle: 0..1 }
+function bodyMapSvg(levels = {}, cls = '') {
+  const f = (m) => { const c = heat(levels[m]); return c ? ` style="fill:${c}"` : ''; };
+  const hot = (m) => (levels[m] >= 0.6 ? ' hot' : '');
+  const P = (m, d) => `<path class="mu${hot(m)}" d="${d}"${f(m)}/>`;
+  const E = (m, cx, cy, rx, ry) => `<ellipse class="mu${hot(m)}" cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}"${f(m)}/>`;
+  const R = (m, x, y, w, h, r) => `<rect class="mu${hot(m)}" x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}"${f(m)}/>`;
+  const mirror = (s) => s + `<g transform="translate(100 0) scale(-1 1)">${s}</g>`;
+  const torso = '<ellipse class="bm" cx="50" cy="13.5" rx="8.5" ry="10.5"/><rect class="bm" x="45.5" y="20" width="9" height="11" rx="3"/>'
+    + '<path class="bm" d="M38,29 C44,26.5 56,26.5 62,29 L70,33 C73.5,36 73.5,44 70,50 L66,58 L64,74 C63,82 64,88 64,93 L36,93 C36,88 37,82 36,74 L34,58 L30,50 C26.5,44 26.5,36 30,33 Z"/>';
+  const limbs = '<g transform="rotate(10 32 36)"><rect class="bm" x="24" y="37" width="11.5" height="31" rx="5.75"/><rect class="bm" x="24.5" y="66" width="10.5" height="28" rx="5.25"/><ellipse class="bm" cx="29.75" cy="98" rx="4.4" ry="5.4"/></g>'
+    + '<rect class="bm" x="37" y="86" width="13" height="54" rx="6.5"/><rect class="bm" x="38" y="137" width="10.5" height="47" rx="5.25"/><ellipse class="bm" cx="43" cy="187" rx="6" ry="3.4"/>';
+  const frontHalf = limbs
+    + `<g transform="rotate(10 32 36)">${E('shoulders', 31, 38, 7.5, 7)}${E('biceps', 29.75, 53, 4.6, 10.5)}${E('forearms', 29.75, 79, 4.3, 11)}</g>`
+    + P('chest', 'M49.5,34 C43,32.5 37,34.5 36,40 C36.5,47 42,50.5 49.5,49 Z')
+    + P('obliques', 'M37.5,52 C36,60 37,72 39.5,82 L42.5,83 L42.5,52 Z')
+    + R('abs', 43.5, 51, 5.6, 7.5, 2) + R('abs', 43.5, 59.5, 5.6, 7.5, 2) + R('abs', 43.5, 68, 5.6, 7.5, 2) + R('abs', 43.5, 76.5, 5.6, 9, 2.5)
+    + P('traps', 'M45.5,26.5 L37.5,30.5 L45.5,31.5 Z')
+    + P('quads', 'M38.5,96 C37,110 38.5,128 42,138 L47,138 C49,124 49.5,108 48.5,94 Z')
+    + E('calves', 42.5, 157, 4.2, 13);
+  const backHalf = limbs
+    + `<g transform="rotate(10 32 36)">${E('shoulders', 31, 38, 7.5, 7)}${E('triceps', 29.75, 54, 4.6, 10.5)}${E('forearms', 29.75, 79, 4.3, 11)}</g>`
+    + P('lats', 'M43,44 C38,45 35.5,50 36.5,58 C38,67 43,73 48,75 L48.5,56 Z')
+    + E('glutes', 44, 96, 7.5, 8.5)
+    + P('hamstrings', 'M38.5,106 C38,118 39.5,130 42.5,138 L47.5,138 C49,126 49,114 48.5,104 Z')
+    + E('calves', 43, 153, 5.2, 13);
+  const back = torso + mirror(backHalf)
+    + P('traps', 'M50,23 L58.5,30.5 L57,42 L50,54 L43,42 L41.5,30.5 Z')
+    + P('lowerback', 'M44,74 C44,70 56,70 56,74 L56,86 C53,88 47,88 44,86 Z');
+  return `<svg class="bodymap ${cls}" viewBox="0 0 210 196" aria-hidden="true"><g>${torso}${mirror(frontHalf)}</g><g transform="translate(110 0)">${back}</g></svg>`;
+}
+
+// Map + per-muscle list for a set of workouts
+function musclesPanelHtml(workouts, { list = true } = {}) {
+  const load = muscleLoad(workouts);
+  const lv = loadLevels(load);
+  let h = `<div class="bm-wrap">${bodyMapSvg(lv)}<div class="bm-cap"><span>спереду</span><span>ззаду</span></div></div>`;
+  if (list) {
+    const rows = Object.keys(MUSCLES).map((m) => ({ m, o: load[m] })).sort((a, b) => (b.o?.sets || 0) - (a.o?.sets || 0));
+    h += `<div class="mlist">${rows.map(({ m, o }) => `<div class="mrow${o ? '' : ' off'}">
+      <span class="mdot" style="background:${heat(lv[m]) || 'rgba(255,255,255,.12)'}"></span>
+      <span class="mname">${MUSCLES[m]}</span>
+      <span class="mbar"><i style="width:${Math.round((lv[m] || 0) * 100)}%"></i></span>
+      <span class="mval">${o ? `${round1(o.sets)} підх. · ${ago(o.last)}` : 'не було'}</span>
+    </div>`).join('')}</div>`;
+  }
+  return h;
+}
+
+// When did the working weight last change? → { cur, prev, since } | null
+function weightTrend(exId) {
+  const ss = sessionsFor(exId);
+  if (!ss.length) return null;
+  const tops = ss.map((x) => Math.max(...x.sets.map((s) => s.w)));
+  let j = 0;
+  while (j + 1 < tops.length && tops[j + 1] === tops[0]) j++;
+  return { cur: tops[0], prev: j + 1 < tops.length ? tops[j + 1] : null, since: ss[j].wk.startedAt };
+}
+
+function openMuscleEditor(exId) {
+  const ex = exById(exId);
+  if (!ex) return;
+  const cur = { ...exMuscles(exId) };
+  const el = document.createElement('div');
+  el.className = 'modal dialog-wrap';
+  const draw = () => {
+    el.innerHTML = `<div class="dialog msheet">
+      <p>${esc(ex.name)}</p>
+      <div class="muted small">Тап по м’язу: основний → допоміжний → вимк.</div>
+      <div class="bm-wrap sm">${bodyMapSvg(cur)}</div>
+      <div class="chips">${Object.entries(MUSCLES).map(([m, l]) => `<button class="chip${cur[m] >= 1 ? ' on' : cur[m] ? ' half' : ''}" data-ms="${m}">${l}${cur[m] && cur[m] < 1 ? ' ½' : ''}</button>`).join('')}</div>
+      <div class="dialog-a"><button class="btn" data-ms-auto="1">Авто</button><button class="btn primary" data-ms-done="1">Готово</button></div>
+    </div>`;
+  };
+  draw();
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (e.target === el) { el.remove(); return; }
+    const b = e.target.closest('[data-ms],[data-ms-auto],[data-ms-done]');
+    if (!b) return;
+    if (b.dataset.ms) {
+      const m = b.dataset.ms;
+      cur[m] = !cur[m] ? 1 : cur[m] >= 1 ? 0.5 : 0;
+      if (!cur[m]) delete cur[m];
+      draw();
+    } else {
+      if (b.dataset.msAuto) delete ex.muscles; else ex.muscles = { ...cur };
+      save(); el.remove(); render();
+    }
+  });
+  document.body.appendChild(el);
+}
+
 /* ---------- Active workout ---------- */
 function newActiveEx(exerciseId, plan) {
   const last = lastSets(exerciseId);
   const n = plan?.sets || last?.length || 3;
   return {
     exerciseId,
-    plan: plan && (plan.sets || plan.w != null) ? { sets: plan.sets || null, reps: plan.reps || null, w: plan.w ?? null, wAt: plan.wAt || 0 } : null,
+    plan: plan && (plan.sets || plan.w != null || plan.ws?.some((x) => x != null)) ? { sets: plan.sets || null, reps: plan.reps || null, w: plan.w ?? null, ws: plan.ws ? [...plan.ws] : null, wAt: plan.wAt || 0 } : null,
     sets: Array.from({ length: n }, () => ({ w: '', r: '', done: false })),
   };
 }
@@ -261,18 +450,32 @@ function startWorkout(pid, did, dateKey = null) {
   if (!d || !d.items.length) setTimeout(() => openPicker(addExToWorkout), 150);
 }
 
-// Suggested values for a set (shown as placeholders, used if the field is left empty).
-function hint(ax, si) {
+// Planned weight for set si: the program (if edited after the last session),
+// otherwise what you did last time on that set.
+function baseW(ax, si) {
   const last = lastSets(ax.exerciseId);
   const lastS = last ? last[si] || last[last.length - 1] : null;
-  const prev = si > 0 ? ax.sets[si - 1] : null;
-  const prevW = prev ? num(prev.w) : null;
-  const prevR = prev ? num(prev.r) : null;
   const lastTime = last ? sessionsFor(ax.exerciseId)[0].wk.startedAt : 0;
-  const pw = ax.plan?.w ?? null;
+  const pw = ax.plan?.ws?.[si] ?? ax.plan?.w ?? null;
   const planFresh = pw != null && (!last || ax.plan.wAt > lastTime);
-  const w = prevW ?? (planFresh ? pw : null) ?? lastS?.w ?? pw ?? (prev ? hint(ax, si - 1).w : null);
-  const r = ax.plan?.reps || prevR || lastS?.r || null;
+  return (planFresh ? pw : null) ?? lastS?.w ?? pw ?? null;
+}
+
+// Suggested values for a set (shown as placeholders, used if the field is left empty).
+// If you changed the previous set's weight today, the same change carries over
+// (60/62.5/65 pyramid stays a pyramid; +1 kg on set 1 → +1 kg on the next ones).
+function hint(ax, si) {
+  const prev = si > 0 ? ax.sets[si - 1] : null;
+  const prevW = prev ? (num(prev.w) ?? hint(ax, si - 1).w) : null;
+  let w = baseW(ax, si);
+  if (prevW != null) {
+    const pb = baseW(ax, si - 1);
+    w = w != null && pb != null ? Math.max(0, Math.round((w + prevW - pb) * 100) / 100) : prevW;
+  }
+  if (w == null && prev) w = hint(ax, si - 1).w;
+  const last = lastSets(ax.exerciseId);
+  const lastS = last ? last[si] || last[last.length - 1] : null;
+  const r = ax.plan?.reps || (prev ? num(prev.r) : null) || lastS?.r || null;
   return { w, r };
 }
 
@@ -317,6 +520,15 @@ async function finishWorkout() {
   }
   const wk = { id: a.id, startedAt, finishedAt, programId: a.programId, dayId: a.dayId, title: a.title, exercises };
   S.workouts.push(wk);
+  // Remember the working weight in the program, so next time starts from it
+  const day = a.programId && a.dayId ? findDay(a.programId, a.dayId)?.d : null;
+  if (day && !a.dateKey) {
+    for (const e of exercises) {
+      const it = day.items.find((x) => x.exerciseId === e.exerciseId);
+      const top = Math.max(...e.sets.map((s) => s.w));
+      if (it && top > 0) { it.w = top; it.ws = e.sets.map((s) => s.w); it.wAt = finishedAt; }
+    }
+  }
   S.active = null;
   save();
   go('#/history/' + wk.id);
@@ -414,6 +626,21 @@ function viewHome() {
     ${planned && !doneToday ? `<button class="btn primary wide" data-a="start" data-pid="${planned.p.id}" data-did="${planned.d.id}">${I.play} Почати ${esc(planned.d.name)}</button>` : ''}
   </section>`;
 
+  if (S.workouts.length) {
+    const load = muscleLoad(S.workouts.filter((w) => w.startedAt >= now - 7 * DAY));
+    const top = Object.entries(load).sort((a, b) => b[1].sets - a[1].sets).slice(0, 3).map(([m]) => MUSCLES[m]);
+    const rest = Object.keys(MUSCLES).filter((m) => !load[m]).slice(0, 3).map((m) => MUSCLES[m]);
+    body += `<a class="card mcard" href="#/progress">
+      <div class="mcard-map">${bodyMapSvg(loadLevels(load))}</div>
+      <div class="mcard-t">
+        <div class="eyebrow">М’язи · 7 днів</div>
+        ${top.length ? `<div class="mcard-l"><span class="dot-r"></span>${esc(top.join(', '))}</div>` : '<div class="muted small">Цього тижня ще нічого</div>'}
+        ${rest.length ? `<div class="muted small">Давно не качав: ${esc(rest.join(', '))}</div>` : ''}
+        <span class="go">›</span>
+      </div>
+    </a>`;
+  }
+
   const upcoming = Object.entries(S.marks).filter(([k, m]) => m.t === 'plan' && k > todayK).sort(([a], [b]) => (a < b ? -1 : 1)).slice(0, 3);
   if (upcoming.length) {
     body += `<h2 class="sec">Заплановано</h2><section class="card list">${upcoming.map(([k, m]) => {
@@ -485,12 +712,17 @@ function exCard(ax, ei) {
   if (last && ax.plan?.reps && last.length >= ax.plan.sets && last.every((s) => s.r >= ax.plan.reps) && last[0].w > 0) {
     tip = `<div class="tip">⚡ Минулого разу план виконано — спробуй +${fmtW(stepFor(ax.exerciseId))} кг</div>`;
   }
+  const tr = weightTrend(ax.exerciseId);
+  const trTxt = tr && tr.prev != null ? ` <span class="delta ${tr.cur > tr.prev ? 'up' : 'down'}">${tr.cur > tr.prev ? '▲ +' : '▼ −'}${fmtW(Math.abs(round1(tr.cur - tr.prev)))} кг</span>` : '';
+  const name = exName(ax.exerciseId);
   return `<section class="card ex${done && done === ax.sets.length ? ' complete' : ''}">
     <div class="ex-h">
-      <div><div class="ex-name">${esc(exName(ax.exerciseId))}</div><div class="muted small">${meta}</div></div>
+      <button class="ex-map" data-a="editMuscles" data-id="${ax.exerciseId}" aria-label="М’язи вправи">${bodyMapSvg(exMuscles(ax.exerciseId), 'mini')}</button>
+      <div class="ex-ht"><div class="ex-name">${esc(name)}</div><div class="muted small">${meta}</div>
+        <a class="tech" href="https://www.youtube.com/results?search_query=${encodeURIComponent(name + ' техніка виконання')}" target="_blank" rel="noopener">▶ Техніка</a></div>
       <button class="icon-btn" data-a="removeEx" data-ei="${ei}" aria-label="Прибрати вправу">✕</button>
     </div>
-    <div class="last small"><span class="muted">Минулого разу:</span> <span class="mono">${lastTxt}</span></div>
+    <div class="last small"><span class="muted">Минулого разу:</span> <span class="mono">${lastTxt}</span>${trTxt}</div>
     ${tip}
     <div class="sets-head small muted"><span>#</span><span>кг</span><span></span><span>повт.</span><span></span></div>
     ${ax.sets.map((s, si) => setRow(ax, ei, s, si)).join('')}
@@ -535,6 +767,7 @@ function viewProgram(p) {
     const items = d.items.map((it, ii) => {
       const lw = lastSets(it.exerciseId)?.[0]?.w;
       const ex = exById(it.exerciseId);
+      const tr = weightTrend(it.exerciseId);
       const ai = `${at} data-ii="${ii}" autocomplete="off"`;
       return `<div class="item">
         <div class="item-top">
@@ -550,6 +783,11 @@ function viewProgram(p) {
           <label><span>Повтори</span><input class="in num" data-f="ireps" ${ai} inputmode="numeric" value="${it.reps ?? ''}" placeholder="—"></label>
           <label><span>Вага, кг</span><input class="in num" data-f="iw" ${ai} inputmode="decimal" value="${it.w != null ? fmtW(it.w) : ''}" placeholder="${lw != null ? fmtW(lw) : '—'}"></label>
           <label><span>Крок, +кг</span><input class="in num" data-f="istep" ${ai} inputmode="decimal" value="${ex?.step ? fmtW(ex.step) : ''}" placeholder="${fmtW(S.settings.step)}"></label>
+        </div>
+        ${it.sets ? `<div class="item-ws"><span class="muted small">Вага по підходах, кг</span><div class="ws-row">${Array.from({ length: Math.min(it.sets, 10) }, (_, si) => `<label><i>${si + 1}</i><input class="in num" data-f="iws" ${ai} data-si="${si}" inputmode="decimal" value="${it.ws?.[si] != null ? fmtW(it.ws[si]) : ''}" placeholder="${it.w != null ? fmtW(it.w) : (lw != null ? fmtW(lw) : '—')}"></label>`).join('')}</div></div>` : ''}
+        <div class="item-b">
+          <button class="mchip" data-a="editMuscles" data-id="${it.exerciseId}">🎯 ${esc(Object.entries(exMuscles(it.exerciseId)).sort((a, b) => b[1] - a[1]).map(([m]) => MUSCLES[m]).slice(0, 3).join(', ') || 'вказати м’язи')}</button>
+          ${tr ? `<span class="wtrend">${fmtW(tr.cur)} кг з ${fmtShort(tr.since)}${tr.prev != null ? ` <span class="delta ${tr.cur > tr.prev ? 'up' : 'down'}">${tr.cur > tr.prev ? '▲' : '▼'} було ${fmtW(tr.prev)}</span>` : ''}</span>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -608,6 +846,7 @@ function viewWorkoutDetail(wk) {
       <div><b>${st.sets}</b><span>підходів</span></div>
       <div><b>${fmtVol(st.vol)}</b><span>об’єм</span></div>
     </div>`
+    + `<section class="card"><div class="ex-name">М’язи цього тренування</div>${musclesPanelHtml([wk], { list: false })}</section>`
     + wk.exercises.map((e) => `<section class="card">
       <a class="ex-name link" href="#/progress/${e.exerciseId}">${esc(exName(e.exerciseId))} ›</a>
       <div class="setlist">${e.sets.map((s, i) => `<div><span class="muted">${i + 1}.</span> ${fmtW(s.w)} кг × ${s.r}${s.pr ? ' 🏆' : ''}</div>`).join('')}</div>
@@ -726,9 +965,16 @@ function viewProgress() {
   }).filter(Boolean).sort((a, b) => b.last - a.last);
 
   if (!rows.length) {
-    return { title: 'Прогрес', actions: settingsBtn, body: `<div class="empty"><div class="big-ico">📈</div><p>Після першого тренування тут буде прогрес по кожній вправі</p></div>` };
+    return { title: 'Прогрес', actions: settingsBtn, body: `<div class="empty"><div class="big-ico">📈</div><p>Після першого тренування тут буде прогрес по кожній вправі і мапа м’язів</p></div>` };
   }
-  const body = rows.map((r) => `<a class="card row" href="#/progress/${r.e.id}">
+  const since = Date.now() - musclePeriod * DAY;
+  let body = `<section class="card">
+      <div class="card-h"><div class="ex-name">М’язи</div>
+        <div class="seg mini">${[7, 14, 30].map((d) => `<button class="${d === musclePeriod ? 'on' : ''}" data-a="mPeriod" data-d="${d}">${d} дн</button>`).join('')}</div></div>
+      ${musclesPanelHtml(S.workouts.filter((w) => w.startedAt >= since))}
+    </section>
+    <h2 class="sec">Вправи</h2>`;
+  body += rows.map((r) => `<a class="card row" href="#/progress/${r.e.id}">
       <div><div class="ex-name">${esc(r.e.name)}</div>
       <div class="muted small">Рекорд <span class="mono hl">${fmtW(r.best.w)}×${r.best.r}</span> · ${r.n} ${plural(r.n, ['тренування', 'тренування', 'тренувань'])} · ${ago(r.last)}</div></div>
       <span class="go">›</span>
@@ -736,6 +982,7 @@ function viewProgress() {
   return { title: 'Прогрес', actions: settingsBtn, body };
 }
 
+let musclePeriod = 7;
 let metric = 'e1rm';
 const METRICS = {
   e1rm: { label: '1ПМ', val: (sets) => Math.max(...sets.map((s) => e1rm(s.w, s.r))) },
@@ -1297,6 +1544,8 @@ const A = {
     save(); go('#/calendar');
   },
   metric: (d) => { metric = d.m; render(); },
+  mPeriod: (d) => { musclePeriod = +d.d; render(); },
+  editMuscles: (d) => openMuscleEditor(d.id),
 
   // --- body
   bodyMetric: (d) => { bodyMetric = d.m; render(); },
@@ -1371,6 +1620,14 @@ document.addEventListener('input', (e) => {
       it[f === 'isets' ? 'sets' : 'reps'] = Number.isFinite(n) && n > 0 ? n : null;
       break;
     }
+    case 'iws': {
+      const it = prog(d.pid).days[+d.di].items[+d.ii];
+      const n = num(v);
+      it.ws = it.ws || [];
+      it.ws[+d.si] = n != null && n >= 0 ? n : null;
+      it.wAt = Date.now();
+      break;
+    }
     case 'iw': {
       const it = prog(d.pid).days[+d.di].items[+d.ii];
       const n = num(v);
@@ -1413,6 +1670,7 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('change', async (e) => {
   const t = e.target;
   if (t.id === 'importFile' && t.files[0]) importData(t.files[0]);
+  if (t.dataset.f === 'isets') render();
   if (t.dataset.f === 'photoIn' && t.files.length && bodyDraft) {
     const files = [...t.files];
     toast(`Обробка фото… (${files.length})`);
