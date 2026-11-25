@@ -454,3 +454,23 @@ svg.i { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round
 .ws-row label { position: relative; }
 .ws-row i { position: absolute; top: 4px; left: 8px; font-style: normal; font-size: 10px; color: var(--muted); pointer-events: none; }
 .ws-row .in { padding-top: 8px; }
+
+/* Warm-up sets, notes, rest chip, plate calculator */
+button.sn { border: 0; background: none; padding: 0; height: 44px; font: inherit; font-weight: 700; color: var(--muted); }
+.sn.wu { color: #f5c518; font-weight: 800; }
+.set.wu .in { color: #c9b26a; }
+.set.wu.done { background: rgba(245, 197, 24, .07); }
+.set.wu.done .chk { background: #f5c518; border-color: #f5c518; box-shadow: none; color: #2a2000; }
+.setlist .wu { opacity: .7; }
+.exnote { margin-top: 10px; height: 40px; font-size: 14px; background: rgba(255, 255, 255, .04); }
+.restchip { margin-left: 8px; border: 1px solid var(--stroke); background: rgba(255, 255, 255, .05); border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.plates-btn { margin-right: auto; }
+.dialog.plates p { margin-bottom: 4px; }
+.pl-w { display: flex; align-items: center; justify-content: center; gap: 16px; margin: 6px 0 10px; }
+.pl-w b { font-size: 30px; font-weight: 800; letter-spacing: -.03em; min-width: 120px; font-variant-numeric: tabular-nums; }
+.bar-vis { display: flex; align-items: center; justify-content: center; gap: 3px; min-height: 96px; margin-bottom: 8px; }
+.bar-sleeve { width: 34px; height: 10px; border-radius: 3px; background: #9aa0ad; }
+.bar-collar { width: 28px; height: 10px; border-radius: 3px; background: #9aa0ad; }
+.plate { width: 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; writing-mode: vertical-rl; transform: rotate(180deg); font-size: 10px; font-weight: 800; color: #111; }
+.pl-bar { justify-content: center; align-items: center; }
+.dialog-a.one { grid-template-columns: 1fr; }

@@ -48,7 +48,7 @@ function defaults() {
     body: [],
     marks: {},       // 'YYYY-MM-DD' → { t: 'plan'|'done'|'rest', pid, did, note }
     active: null,
-    settings: { rest: 90, step: 2.5, weekGoal: 3, lastBackup: null },
+    settings: { rest: 90, step: 2.5, weekGoal: 3, bar: 20, lastBackup: null },
   };
 }
 
@@ -83,6 +83,9 @@ const exById = (id) => S.exercises.find((e) => e.id === id);
 const exName = (id) => exById(id)?.name ?? 'Вправа';
 const prog = (id) => S.programs.find((p) => p.id === id);
 const stepFor = (exId) => exById(exId)?.step || S.settings.step;
+const restFor = (exId) => exById(exId)?.rest || S.settings.rest;
+// Working sets only (warm-ups excluded); falls back to all sets if every set is a warm-up
+const work = (sets) => { const w = sets.filter((x) => !x.wu); return w.length ? w : sets; };
 function findDay(pid, did) {
   const p = prog(pid);
   const d = p?.days.find((x) => x.id === did);
@@ -203,14 +206,14 @@ const lastSets = (exId) => sessionsFor(exId)[0]?.sets ?? null;
 function histBest(exId) {
   let best = null;
   for (const wk of S.workouts) for (const e of wk.exercises) if (e.exerciseId === exId) {
-    for (const s of e.sets) { const v = e1rm(s.w, s.r); if (best == null || v > best) best = v; }
+    for (const s of e.sets) { if (s.wu) continue; const v = e1rm(s.w, s.r); if (best == null || v > best) best = v; }
   }
   return best;
 }
 
 function wStats(wk) {
   let sets = 0, vol = 0;
-  for (const e of wk.exercises) for (const s of e.sets) { sets++; vol += s.w * s.r; }
+  for (const e of wk.exercises) for (const s of e.sets) { if (s.wu) continue; sets++; vol += s.w * s.r; }
   return { sets, vol };
 }
 
@@ -308,7 +311,7 @@ function muscleLoad(workouts) {
   for (const w of workouts) for (const e of w.exercises) {
     for (const [m, k] of Object.entries(exMuscles(e.exerciseId))) {
       const o = (out[m] ||= { sets: 0, last: 0 });
-      o.sets += e.sets.length * k;
+      o.sets += e.sets.filter((x) => !x.wu).length * k;
       o.last = Math.max(o.last, w.startedAt);
     }
   }
@@ -379,7 +382,7 @@ function musclesPanelHtml(workouts, { list = true } = {}) {
 function weightTrend(exId) {
   const ss = sessionsFor(exId);
   if (!ss.length) return null;
-  const tops = ss.map((x) => Math.max(...x.sets.map((s) => s.w)));
+  const tops = ss.map((x) => Math.max(...work(x.sets).map((s) => s.w)));
   let j = 0;
   while (j + 1 < tops.length && tops[j + 1] === tops[0]) j++;
   return { cur: tops[0], prev: j + 1 < tops.length ? tops[j + 1] : null, since: ss[j].wk.startedAt };
@@ -419,14 +422,58 @@ function openMuscleEditor(exId) {
   document.body.appendChild(el);
 }
 
+/* ---------- Plate calculator ---------- */
+const PLATES = [25, 20, 15, 10, 5, 2.5, 1.25];
+const PLATE_COLORS = { 25: '#e5484d', 20: '#3b82f6', 15: '#f5c518', 10: '#22c55e', 5: '#e9e9ee', 2.5: '#6b6b76', 1.25: '#b4b4bd' };
+function platesFor(total, bar) {
+  let side = (total - bar) / 2;
+  const out = [];
+  if (side <= 0) return { out, rest: 0 };
+  for (const p of PLATES) while (side + 1e-9 >= p) { out.push(p); side -= p; }
+  return { out, rest: Math.round(side * 100) / 100 };
+}
+function openPlates(weight) {
+  let W = weight || S.settings.bar;
+  const el = document.createElement('div');
+  el.className = 'modal dialog-wrap';
+  const draw = () => {
+    const bar = S.settings.bar;
+    const { out, rest } = platesFor(W, bar);
+    el.innerHTML = `<div class="dialog plates">
+      <p>Диски на кожен бік</p>
+      <div class="pl-w"><button class="icon-btn" data-pw="-2.5" aria-label="Менше">−</button><b>${fmtW(W)} кг</b><button class="icon-btn" data-pw="2.5" aria-label="Більше">+</button></div>
+      <div class="bar-vis"><span class="bar-sleeve"></span>${out.map((p) => `<span class="plate" style="height:${26 + p * 2.6}px;background:${PLATE_COLORS[p]}">${fmtW(p)}</span>`).join('')}<span class="bar-collar"></span></div>
+      <div class="muted small">${W < bar ? `Менше за вагу грифа (${fmtW(bar)} кг)` : out.length ? out.map(fmtW).join(' + ') + ' кг з кожного боку' : 'Тільки гриф'}${rest > 0 ? ` · не вистачає ${fmtW(rest * 2)} кг` : ''}</div>
+      <div class="chips pl-bar"><span class="muted small">Гриф:</span>${[20, 15, 10].map((b) => `<button class="chip${b === bar ? ' on' : ''}" data-bar="${b}">${b} кг</button>`).join('')}</div>
+      <div class="dialog-a one"><button class="btn primary" data-close="1">Готово</button></div>
+    </div>`;
+  };
+  draw();
+  el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (e.target === el) { el.remove(); return; }
+    const b = e.target.closest('[data-pw],[data-bar],[data-close]');
+    if (!b) return;
+    if (b.dataset.pw) { W = Math.max(0, W + +b.dataset.pw); draw(); }
+    else if (b.dataset.bar) { S.settings.bar = +b.dataset.bar; save(); draw(); }
+    else el.remove();
+  });
+  document.body.appendChild(el);
+}
+
 /* ---------- Active workout ---------- */
 function newActiveEx(exerciseId, plan) {
   const last = lastSets(exerciseId);
-  const n = plan?.sets || last?.length || 3;
+  let wuN = last ? last.findIndex((x) => !x.wu) : 0;
+  if (wuN < 0) wuN = 0;
+  const n = plan?.sets || (last ? last.length - wuN : 0) || 3;
   return {
     exerciseId,
     plan: plan && (plan.sets || plan.w != null || plan.ws?.some((x) => x != null)) ? { sets: plan.sets || null, reps: plan.reps || null, w: plan.w ?? null, ws: plan.ws ? [...plan.ws] : null, wAt: plan.wAt || 0 } : null,
-    sets: Array.from({ length: n }, () => ({ w: '', r: '', done: false })),
+    sets: [
+      ...Array.from({ length: wuN }, () => ({ w: '', r: '', done: false, wu: true })),
+      ...Array.from({ length: n }, () => ({ w: '', r: '', done: false })),
+    ],
   };
 }
 
@@ -456,7 +503,8 @@ function baseW(ax, si) {
   const last = lastSets(ax.exerciseId);
   const lastS = last ? last[si] || last[last.length - 1] : null;
   const lastTime = last ? sessionsFor(ax.exerciseId)[0].wk.startedAt : 0;
-  const pw = ax.plan?.ws?.[si] ?? ax.plan?.w ?? null;
+  const wi = ax.sets.slice(0, si).filter((x) => !x.wu).length;
+  const pw = ax.sets[si]?.wu ? null : (ax.plan?.ws?.[wi] ?? ax.plan?.w ?? null);
   const planFresh = pw != null && (!last || ax.plan.wAt > lastTime);
   return (planFresh ? pw : null) ?? lastS?.w ?? pw ?? null;
 }
@@ -485,8 +533,8 @@ function addExToWorkout(ex) {
   setTimeout(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }), 50);
 }
 
-function startRest() {
-  const sec = S.settings.rest;
+function startRest(exId) {
+  const sec = restFor(exId);
   if (!sec) return;
   S.active.restEnd = Date.now() + sec * 1000;
   S.active.restBeeped = false;
@@ -500,6 +548,7 @@ async function finishWorkout() {
       sets: ax.sets.filter((s) => s.done).map((s) => {
         const o = { w: num(s.w) ?? 0, r: num(s.r) ?? 0 };
         if (s.pr) o.pr = true;
+        if (s.wu) o.wu = true;
         return o;
       }),
     }))
@@ -525,8 +574,9 @@ async function finishWorkout() {
   if (day && !a.dateKey) {
     for (const e of exercises) {
       const it = day.items.find((x) => x.exerciseId === e.exerciseId);
-      const top = Math.max(...e.sets.map((s) => s.w));
-      if (it && top > 0) { it.w = top; it.ws = e.sets.map((s) => s.w); it.wAt = finishedAt; }
+      const ws = work(e.sets);
+      const top = Math.max(...ws.map((s) => s.w));
+      if (it && top > 0) { it.w = top; it.ws = ws.map((s) => s.w); it.wAt = finishedAt; }
     }
   }
   S.active = null;
@@ -707,7 +757,7 @@ function exCard(ax, ei) {
   const pl = ax.plan;
   const planTxt = pl ? 'план ' + [pl.sets ? `${pl.sets}×${pl.reps || '—'}` : '', pl.w != null ? `${fmtW(pl.w)} кг` : ''].filter(Boolean).join(' · ') : '';
   const meta = [planTxt, `${done}/${ax.sets.length} підх.`, `крок ${fmtW(stepFor(ax.exerciseId))} кг`].filter(Boolean).join(' · ');
-  const lastTxt = last ? last.map((s) => `${fmtW(s.w)}×${s.r}`).join(' · ') : 'вперше 🎉';
+  const lastTxt = last ? last.map((s) => `${s.wu ? 'W ' : ''}${fmtW(s.w)}×${s.r}`).join(' · ') : 'вперше 🎉';
   let tip = '';
   if (last && ax.plan?.reps && last.length >= ax.plan.sets && last.every((s) => s.r >= ax.plan.reps) && last[0].w > 0) {
     tip = `<div class="tip">⚡ Минулого разу план виконано — спробуй +${fmtW(stepFor(ax.exerciseId))} кг</div>`;
@@ -719,14 +769,16 @@ function exCard(ax, ei) {
     <div class="ex-h">
       <button class="ex-map" data-a="editMuscles" data-id="${ax.exerciseId}" aria-label="М’язи вправи">${bodyMapSvg(exMuscles(ax.exerciseId), 'mini')}</button>
       <div class="ex-ht"><div class="ex-name">${esc(name)}</div><div class="muted small">${meta}</div>
-        <a class="tech" href="https://www.youtube.com/results?search_query=${encodeURIComponent(name + ' техніка виконання')}" target="_blank" rel="noopener">▶ Техніка</a></div>
+        <a class="tech" href="https://www.youtube.com/results?search_query=${encodeURIComponent(name + ' техніка виконання')}" target="_blank" rel="noopener">▶ Техніка</a><button class="restchip" data-a="restCycle" data-id="${ax.exerciseId}" aria-label="Відпочинок для вправи">⏱ ${fmtClock(restFor(ax.exerciseId) * 1000)}</button></div>
       <button class="icon-btn" data-a="removeEx" data-ei="${ei}" aria-label="Прибрати вправу">✕</button>
     </div>
     <div class="last small"><span class="muted">Минулого разу:</span> <span class="mono">${lastTxt}</span>${trTxt}</div>
     ${tip}
+    <input class="in exnote" data-f="exnote" data-id="${ax.exerciseId}" value="${esc(exById(ax.exerciseId)?.note || '')}" placeholder="📝 Нотатка: сидіння, хват, налаштування…" autocomplete="off">
     <div class="sets-head small muted"><span>#</span><span>кг</span><span></span><span>повт.</span><span></span></div>
     ${ax.sets.map((s, si) => setRow(ax, ei, s, si)).join('')}
     <div class="ex-f">
+      <button class="btn sm plates-btn" data-a="plates" data-ei="${ei}">Диски</button>
       <button class="btn sm" data-a="removeSet" data-ei="${ei}" ${ax.sets.length ? '' : 'disabled'}>− підхід</button>
       <button class="btn sm" data-a="addSet" data-ei="${ei}">+ підхід</button>
     </div>
@@ -736,8 +788,8 @@ function exCard(ax, ei) {
 function setRow(ax, ei, s, si) {
   const h = hint(ax, si);
   const at = `data-ei="${ei}" data-si="${si}"`;
-  return `<div class="set${s.done ? ' done' : ''}">
-    <span class="sn">${s.pr ? '🏆' : si + 1}</span>
+  return `<div class="set${s.done ? ' done' : ''}${s.wu ? ' wu' : ''}">
+    <button class="sn${s.wu ? ' wu' : ''}" data-a="toggleWu" ${at} aria-label="Розминка / робочий">${s.wu ? 'W' : s.pr ? '🏆' : ax.sets.slice(0, si + 1).filter((x) => !x.wu).length}</button>
     <div class="wgrp">
       <button class="step" data-a="wStep" ${at} data-d="-1" aria-label="Менше ваги">−</button>
       <input class="in" data-f="w" ${at} inputmode="decimal" autocomplete="off" value="${esc(s.w)}" placeholder="${h.w == null ? '' : fmtW(h.w)}">
@@ -835,7 +887,7 @@ function workoutSummaryHtml(w) {
       <div><b>${esc(w.title)}</b><div class="muted small">${fmtTime(w.startedAt)} · ${fmtMin(w.finishedAt - w.startedAt)} · ${st.sets} підх. · ${fmtVol(st.vol)}</div></div>
       <span class="go">›</span>
     </a>
-    ${w.exercises.map((e) => `<div class="wk-ex"><span>${esc(exName(e.exerciseId))}</span><span class="mono">${e.sets.map((s) => `${fmtW(s.w)}×${s.r}${s.pr ? '🏆' : ''}`).join(' · ')}</span></div>`).join('')}
+    ${w.exercises.map((e) => `<div class="wk-ex"><span>${esc(exName(e.exerciseId))}</span><span class="mono">${e.sets.map((s) => `${s.wu ? 'W ' : ''}${fmtW(s.w)}×${s.r}${s.pr ? '🏆' : ''}`).join(' · ')}</span></div>`).join('')}
   </div>`;
 }
 
@@ -849,7 +901,7 @@ function viewWorkoutDetail(wk) {
     + `<section class="card"><div class="ex-name">М’язи цього тренування</div>${musclesPanelHtml([wk], { list: false })}</section>`
     + wk.exercises.map((e) => `<section class="card">
       <a class="ex-name link" href="#/progress/${e.exerciseId}">${esc(exName(e.exerciseId))} ›</a>
-      <div class="setlist">${e.sets.map((s, i) => `<div><span class="muted">${i + 1}.</span> ${fmtW(s.w)} кг × ${s.r}${s.pr ? ' 🏆' : ''}</div>`).join('')}</div>
+      <div class="setlist">${e.sets.map((s, i) => `<div class="${s.wu ? 'wu' : ''}"><span class="muted">${s.wu ? 'W' : i + 1}.</span> ${fmtW(s.w)} кг × ${s.r}${s.pr ? ' 🏆' : ''}</div>`).join('')}</div>
     </section>`).join('')
     + `<button class="btn danger-ghost wide" data-a="delWorkout" data-id="${wk.id}">Видалити тренування</button>`;
   return { title: esc(wk.title), sub: esc(cap(fmtDateLong(wk.startedAt))) + ' · ' + fmtTime(wk.startedAt), back: '#/calendar', body };
@@ -960,7 +1012,7 @@ function viewProgress() {
     const ss = sessionsFor(e.id);
     if (!ss.length) return null;
     let best = null;
-    for (const x of ss) for (const s of x.sets) if (!best || s.w > best.w || (s.w === best.w && s.r > best.r)) best = s;
+    for (const x of ss) for (const s of work(x.sets)) if (!best || s.w > best.w || (s.w === best.w && s.r > best.r)) best = s;
     return { e, n: ss.length, last: ss[0].wk.startedAt, best };
   }).filter(Boolean).sort((a, b) => b.last - a.last);
 
@@ -993,16 +1045,16 @@ const METRICS = {
 function viewProgressEx(e) {
   const ss = sessionsFor(e.id);
   const M = METRICS[metric];
-  const pts = [...ss].reverse().map((x) => ({ t: x.wk.startedAt, y: M.val(x.sets) }));
+  const pts = [...ss].reverse().map((x) => ({ t: x.wk.startedAt, y: M.val(work(x.sets)) }));
 
   let heavy = null, strong = null, reps = null, bestVol = 0;
   for (const x of ss) {
-    for (const s of x.sets) {
+    for (const s of work(x.sets)) {
       if (!heavy || s.w > heavy.w || (s.w === heavy.w && s.r > heavy.r)) heavy = s;
       if (!strong || e1rm(s.w, s.r) > e1rm(strong.w, strong.r)) strong = s;
       if (!reps || s.r > reps.r || (s.r === reps.r && s.w > reps.w)) reps = s;
     }
-    bestVol = Math.max(bestVol, METRICS.vol.val(x.sets));
+    bestVol = Math.max(bestVol, METRICS.vol.val(work(x.sets)));
   }
 
   let body = `<div class="seg">${Object.entries(METRICS).map(([k, m]) => `<button class="${k === metric ? 'on' : ''}" data-a="metric" data-m="${k}">${m.label}</button>`).join('')}</div>`;
@@ -1163,7 +1215,7 @@ function viewSettings() {
       <label class="field"><span>Ціль: тренувань на тиждень</span><input class="in num" data-f="goal" inputmode="numeric" value="${S.settings.weekGoal}"></label>
       <label class="field"><span>Відпочинок між підходами, сек</span><input class="in num" data-f="rest" inputmode="numeric" value="${S.settings.rest}"></label>
       <label class="field"><span>Крок ваги за замовчуванням, кг</span><input class="in num" data-f="step" inputmode="decimal" value="${fmtW(S.settings.step)}"></label>
-      <p class="muted small">Таймер відпочинку стартує сам після кожного ✓. Постав 0, щоб вимкнути.<br>Свій крок ваги для кожної вправи (гантелі, тренажери) задається в програмі біля вправи.</p>
+      <p class="muted small">Таймер відпочинку стартує сам після кожного ✓ (крім розминки). Постав 0, щоб вимкнути. Свій час для вправи — кнопка ⏱ на тренуванні.<br>Свій крок ваги для кожної вправи (гантелі, тренажери) задається в програмі біля вправи.</p>
     </section>
     <section class="card">
       <div class="ex-name">Резервна копія</div>
@@ -1476,9 +1528,9 @@ const A = {
     s.w = fmtW(w); s.r = String(r); s.done = true; s.pr = false;
     const hb = histBest(ax.exerciseId);
     const v = e1rm(w, r);
-    const todayBest = Math.max(-1, ...ax.sets.filter((x) => x !== s && x.done).map((x) => e1rm(num(x.w) ?? 0, num(x.r) ?? 0)));
-    if (hb != null && w > 0 && v > hb + 1e-9 && v > todayBest) { s.pr = true; toast('🏆 Новий рекорд!'); }
-    startRest();
+    const todayBest = Math.max(-1, ...ax.sets.filter((x) => x !== s && x.done && !x.wu).map((x) => e1rm(num(x.w) ?? 0, num(x.r) ?? 0)));
+    if (!s.wu && hb != null && w > 0 && v > hb + 1e-9 && v > todayBest) { s.pr = true; toast('🏆 Новий рекорд!'); }
+    if (!s.wu) startRest(ax.exerciseId);
     save(); render();
   },
   wStep: (d) => {
@@ -1486,6 +1538,30 @@ const A = {
     const base = num(s.w) ?? hint(ax, +d.si).w ?? 0;
     s.w = fmtW(Math.max(0, Math.round((base + +d.d * stepFor(ax.exerciseId)) * 100) / 100));
     save(); render();
+  },
+  toggleWu: (d) => {
+    const s = S.active.exercises[+d.ei].sets[+d.si];
+    s.wu = !s.wu;
+    if (s.wu) s.pr = false;
+    save(); render();
+    toast(s.wu ? 'Розминочний підхід — не йде в рекорди і статистику' : 'Робочий підхід');
+  },
+  plates: (d) => {
+    const ax = S.active.exercises[+d.ei];
+    let si = ax.sets.findIndex((x) => !x.done && !x.wu);
+    if (si < 0) si = ax.sets.length - 1;
+    const s = ax.sets[si];
+    openPlates(s ? (num(s.w) ?? hint(ax, si).w) : null);
+  },
+  restCycle: (d) => {
+    const ex = exById(d.id);
+    const opts = [60, 90, 120, 180, 240];
+    const i = opts.indexOf(ex.rest);
+    if (i === -1) ex.rest = opts[0];
+    else if (i === opts.length - 1) delete ex.rest;
+    else ex.rest = opts[i + 1];
+    save(); render();
+    toast(`Відпочинок для «${ex.name}»: ${ex.rest ? fmtClock(ex.rest * 1000) : 'як у налаштуваннях'}`);
   },
   addSet: (d) => { S.active.exercises[+d.ei].sets.push({ w: '', r: '', done: false }); save(); render(); },
   removeSet: async (d) => {
@@ -1620,6 +1696,7 @@ document.addEventListener('input', (e) => {
       it[f === 'isets' ? 'sets' : 'reps'] = Number.isFinite(n) && n > 0 ? n : null;
       break;
     }
+    case 'exnote': { const ex = exById(d.id); if (ex) { if (v.trim()) ex.note = v; else delete ex.note; } break; }
     case 'iws': {
       const it = prog(d.pid).days[+d.di].items[+d.ii];
       const n = num(v);
