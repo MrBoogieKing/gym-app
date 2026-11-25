@@ -474,3 +474,6 @@ button.sn { border: 0; background: none; padding: 0; height: 44px; font: inherit
 .plate { width: 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; writing-mode: vertical-rl; transform: rotate(180deg); font-size: 10px; font-weight: 800; color: #111; }
 .pl-bar { justify-content: center; align-items: center; }
 .dialog-a.one { grid-template-columns: 1fr; }
+
+.exnote-view { display: block; width: 100%; margin-top: 8px; padding: 0; border: 0; background: none; text-align: left; font-size: 13px; color: #c9cddb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.restchip + .restchip { margin-left: 6px; }

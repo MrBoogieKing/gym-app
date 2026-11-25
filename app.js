@@ -68,7 +68,7 @@ let S = load();
 
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); }
-  catch (e) { toast('⚠️ Не вдалося зберегти дані'); }
+  catch (e) { toast('Не вдалося зберегти дані'); }
 }
 
 /* ---------- Helpers ---------- */
@@ -422,6 +422,8 @@ function openMuscleEditor(exId) {
   document.body.appendChild(el);
 }
 
+let noteOpen = null; // exercise id whose note field is open
+
 /* ---------- Plate calculator ---------- */
 const PLATES = [25, 20, 15, 10, 5, 2.5, 1.25];
 const PLATE_COLORS = { 25: '#e5484d', 20: '#3b82f6', 15: '#f5c518', 10: '#22c55e', 5: '#e9e9ee', 2.5: '#6b6b76', 1.25: '#b4b4bd' };
@@ -555,7 +557,7 @@ async function finishWorkout() {
     .filter((e) => e.sets.length);
 
   if (!exercises.length) {
-    if (await ask('Жодного підходу не відмічено ✓.\nВийти без збереження?', { ok: 'Вийти', danger: true })) {
+    if (await ask('Жодного підходу не відмічено.\nВийти без збереження?', { ok: 'Вийти', danger: true })) {
       S.active = null; save(); render();
     }
     return;
@@ -582,7 +584,7 @@ async function finishWorkout() {
   S.active = null;
   save();
   go('#/history/' + wk.id);
-  toast('💪 Тренування збережено');
+  toast('Тренування збережено');
 }
 
 /* ---------- Sound ---------- */
@@ -648,11 +650,11 @@ function viewHome() {
   for (const w of S.workouts) if (w.startedAt >= ws && w.startedAt < ws + 7 * DAY) weekDays.add(dkey(w.startedAt));
   for (const [k, m] of Object.entries(S.marks)) { const t = keyToTs(k); if (m.t === 'done' && t >= ws && t < ws + 7 * DAY) weekDays.add(k); }
 
-  let headline = 'Готовий до залу?';
-  if (doneToday) headline = 'Сьогодні вже відпрацьовано 💪';
-  else if (planned) headline = `Сьогодні за планом: ${planned.d.name}`;
+  let headline = 'Сьогодні без плану';
+  if (doneToday) headline = 'Сьогодні вже був у залі';
+  else if (planned) headline = `Сьогодні: ${planned.d.name}`;
   else if (tm?.t === 'plan') headline = 'Сьогодні в плані тренування';
-  else if (tm?.t === 'rest') headline = 'Сьогодні відпочинок 😴';
+  else if (tm?.t === 'rest') headline = 'Сьогодні відпочинок';
 
   let strip = '';
   for (let i = 0; i < 7; i++) {
@@ -673,7 +675,7 @@ function viewHome() {
     </div>
     <div class="week">${strip}</div>
     <a class="hero-link" href="#/calendar">${I.cal}<span>Відкрити календар</span><span class="go">›</span></a>
-    ${planned && !doneToday ? `<button class="btn primary wide" data-a="start" data-pid="${planned.p.id}" data-did="${planned.d.id}">${I.play} Почати ${esc(planned.d.name)}</button>` : ''}
+    ${planned && !doneToday ? `<button class="btn primary wide" data-a="start" data-pid="${planned.p.id}" data-did="${planned.d.id}">Почати ${esc(planned.d.name)}</button>` : ''}
   </section>`;
 
   if (S.workouts.length) {
@@ -701,14 +703,13 @@ function viewHome() {
 
   const lb = S.settings.lastBackup;
   if (S.workouts.length >= 3 && (!lb || now - lb > 14 * DAY)) {
-    body += `<a class="notice" href="#/settings">💾 ${lb ? 'Давно не було' : 'Ще немає'} резервної копії — зроби її, це 2 секунди →</a>`;
+    body += `<a class="notice" href="#/settings">${lb ? 'Давно не було резервної копії' : 'Ще немає резервної копії'}. Зберегти →</a>`;
   }
 
   if (!S.programs.length) {
     body += `<div class="empty">
-      <div class="big-ico">🏋️</div>
-      <p><b>Почнімо!</b></p>
-      <p class="small">Створи свою програму тренувань або візьми готовий приклад.</p>
+      <p><b>Ще немає програми</b></p>
+      <p class="small">Створи свою або візьми приклад.</p>
     </div>
     <button class="btn primary wide" data-a="newProgram">Створити програму</button>
     <button class="btn wide" data-a="addTemplate">Приклад: Push / Pull / Legs</button>`;
@@ -743,7 +744,7 @@ function viewWorkout() {
   const empty = a.exercises.length ? '' : `<div class="empty"><p>Додай першу вправу</p></div>`;
   return {
     title: esc(a.title),
-    sub: `${a.dateKey ? '📅 ' + esc(fmtDate(keyToTs(a.dateKey))) + ' · ' : ''}⏱ <span id="elapsed">${fmtDur(Date.now() - a.startedAt)}</span>`,
+    sub: `${a.dateKey ? 'за ' + esc(fmtDate(keyToTs(a.dateKey))) + ' · ' : ''}<span id="elapsed">${fmtDur(Date.now() - a.startedAt)}</span>`,
     actions: `<button class="btn primary sm" data-a="finish">Завершити</button>`,
     body: empty + cards
       + `<button class="btn ghost wide" data-a="addEx">+ Додати вправу</button>`
@@ -757,10 +758,10 @@ function exCard(ax, ei) {
   const pl = ax.plan;
   const planTxt = pl ? 'план ' + [pl.sets ? `${pl.sets}×${pl.reps || '—'}` : '', pl.w != null ? `${fmtW(pl.w)} кг` : ''].filter(Boolean).join(' · ') : '';
   const meta = [planTxt, `${done}/${ax.sets.length} підх.`, `крок ${fmtW(stepFor(ax.exerciseId))} кг`].filter(Boolean).join(' · ');
-  const lastTxt = last ? last.map((s) => `${s.wu ? 'W ' : ''}${fmtW(s.w)}×${s.r}`).join(' · ') : 'вперше 🎉';
+  const lastTxt = last ? last.map((s) => `${s.wu ? 'W ' : ''}${fmtW(s.w)}×${s.r}`).join(' · ') : 'ще не робив';
   let tip = '';
   if (last && ax.plan?.reps && last.length >= ax.plan.sets && last.every((s) => s.r >= ax.plan.reps) && last[0].w > 0) {
-    tip = `<div class="tip">⚡ Минулого разу план виконано — спробуй +${fmtW(stepFor(ax.exerciseId))} кг</div>`;
+    tip = `<div class="tip">Минулого разу все виконав. Можна +${fmtW(stepFor(ax.exerciseId))} кг</div>`;
   }
   const tr = weightTrend(ax.exerciseId);
   const trTxt = tr && tr.prev != null ? ` <span class="delta ${tr.cur > tr.prev ? 'up' : 'down'}">${tr.cur > tr.prev ? '▲ +' : '▼ −'}${fmtW(Math.abs(round1(tr.cur - tr.prev)))} кг</span>` : '';
@@ -769,12 +770,14 @@ function exCard(ax, ei) {
     <div class="ex-h">
       <button class="ex-map" data-a="editMuscles" data-id="${ax.exerciseId}" aria-label="М’язи вправи">${bodyMapSvg(exMuscles(ax.exerciseId), 'mini')}</button>
       <div class="ex-ht"><div class="ex-name">${esc(name)}</div><div class="muted small">${meta}</div>
-        <a class="tech" href="https://www.youtube.com/results?search_query=${encodeURIComponent(name + ' техніка виконання')}" target="_blank" rel="noopener">▶ Техніка</a><button class="restchip" data-a="restCycle" data-id="${ax.exerciseId}" aria-label="Відпочинок для вправи">⏱ ${fmtClock(restFor(ax.exerciseId) * 1000)}</button></div>
+        <a class="tech" href="https://www.youtube.com/results?search_query=${encodeURIComponent(name + ' техніка виконання')}" target="_blank" rel="noopener">Техніка</a><button class="restchip" data-a="restCycle" data-id="${ax.exerciseId}" aria-label="Відпочинок для вправи">відпочинок ${fmtClock(restFor(ax.exerciseId) * 1000)}</button>${exById(ax.exerciseId)?.note ? '' : `<button class="restchip" data-a="noteOpen" data-id="${ax.exerciseId}" aria-label="Додати нотатку">+ нотатка</button>`}</div>
       <button class="icon-btn" data-a="removeEx" data-ei="${ei}" aria-label="Прибрати вправу">✕</button>
     </div>
     <div class="last small"><span class="muted">Минулого разу:</span> <span class="mono">${lastTxt}</span>${trTxt}</div>
     ${tip}
-    <input class="in exnote" data-f="exnote" data-id="${ax.exerciseId}" value="${esc(exById(ax.exerciseId)?.note || '')}" placeholder="📝 Нотатка: сидіння, хват, налаштування…" autocomplete="off">
+    ${noteOpen === ax.exerciseId
+      ? `<input class="in exnote" data-f="exnote" data-id="${ax.exerciseId}" value="${esc(exById(ax.exerciseId)?.note || '')}" placeholder="Сидіння, хват, налаштування…" autocomplete="off" enterkeyhint="done">`
+      : exById(ax.exerciseId)?.note ? `<button class="exnote-view" data-a="noteOpen" data-id="${ax.exerciseId}">${esc(exById(ax.exerciseId).note)}</button>` : ''}
     <div class="sets-head small muted"><span>#</span><span>кг</span><span></span><span>повт.</span><span></span></div>
     ${ax.sets.map((s, si) => setRow(ax, ei, s, si)).join('')}
     <div class="ex-f">
@@ -807,7 +810,7 @@ function viewPrograms() {
       <div class="muted small">${p.days.length} ${plural(p.days.length, ['день', 'дні', 'днів'])} · ${p.days.map((d) => esc(d.name)).join(' · ')}</div></div>
       <span class="go">›</span>
     </a>`).join('');
-  if (!S.programs.length) body = `<div class="empty"><div class="big-ico">📋</div><p>Ще немає програм</p></div>`;
+  if (!S.programs.length) body = `<div class="empty"><p>Ще немає програм</p></div>`;
   body += `<button class="btn primary wide" data-a="newProgram">+ Нова програма</button>`;
   body += `<button class="btn ghost wide" data-a="addTemplate">+ Приклад: Push / Pull / Legs</button>`;
   return { title: 'Програми', actions: settingsBtn, body };
@@ -838,7 +841,7 @@ function viewProgram(p) {
         </div>
         ${it.sets ? `<div class="item-ws"><span class="muted small">Вага по підходах, кг</span><div class="ws-row">${Array.from({ length: Math.min(it.sets, 10) }, (_, si) => `<label><i>${si + 1}</i><input class="in num" data-f="iws" ${ai} data-si="${si}" inputmode="decimal" value="${it.ws?.[si] != null ? fmtW(it.ws[si]) : ''}" placeholder="${it.w != null ? fmtW(it.w) : (lw != null ? fmtW(lw) : '—')}"></label>`).join('')}</div></div>` : ''}
         <div class="item-b">
-          <button class="mchip" data-a="editMuscles" data-id="${it.exerciseId}">🎯 ${esc(Object.entries(exMuscles(it.exerciseId)).sort((a, b) => b[1] - a[1]).map(([m]) => MUSCLES[m]).slice(0, 3).join(', ') || 'вказати м’язи')}</button>
+          <button class="mchip" data-a="editMuscles" data-id="${it.exerciseId}">${esc(Object.entries(exMuscles(it.exerciseId)).sort((a, b) => b[1] - a[1]).map(([m]) => MUSCLES[m]).slice(0, 3).join(', ') || 'вказати м’язи')}</button>
           ${tr ? `<span class="wtrend">${fmtW(tr.cur)} кг з ${fmtShort(tr.since)}${tr.prev != null ? ` <span class="delta ${tr.cur > tr.prev ? 'up' : 'down'}">${tr.cur > tr.prev ? '▲' : '▼'} було ${fmtW(tr.prev)}</span>` : ''}</span>` : ''}
         </div>
       </div>`;
@@ -864,7 +867,7 @@ function viewProgram(p) {
 }
 
 function historyListHtml() {
-  if (!S.workouts.length) return `<div class="empty"><div class="big-ico">🗓️</div><p>Тут з’являться твої тренування</p></div>`;
+  if (!S.workouts.length) return `<div class="empty"><p>Тренувань ще не було</p></div>`;
   const list = [...S.workouts].sort((a, b) => b.startedAt - a.startedAt);
   let html = '', month = '';
   for (const wk of list) {
@@ -941,7 +944,7 @@ function viewCalendar() {
   const body = seg + `<div class="stats">
       <div><b>${mDays}</b><span>днів у залі</span></div>
       <div><b>${mPlan}</b><span>заплановано</span></div>
-      <div><b>${weekStreak()}🔥</b><span>тижнів поспіль</span></div>
+      <div><b>${weekStreak()}</b><span>тижнів поспіль</span></div>
     </div>
     <section class="card cal">
       <div class="cal-h">
@@ -976,30 +979,30 @@ function dayPanelHtml(k, byDay) {
   h += wks.map(workoutSummaryHtml).join('');
 
   if (mk.t === 'plan' && !wks.length) {
-    h += `<div class="plan-line">📌 У плані: <b>${esc(planned ? planned.d.name : 'тренування')}</b></div>`;
+    h += `<div class="plan-line">У плані: <b>${esc(planned ? planned.d.name : 'тренування')}</b></div>`;
   }
 
   if (when === 'future') {
     h += `<div class="dp-sec">Яке тренування плануєш?</div><div class="chips">`
       + days.map((x) => dayChip(x, 'planDay', mk.t === 'plan' && mk.did === x.d.id)).join('')
-      + `<button class="chip${mk.t === 'plan' && !mk.did ? ' on' : ''}" data-a="planDay" data-k="${k}">📌 Будь-яке</button>`
-      + `<button class="chip${mk.t === 'rest' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="rest">💤 Відпочинок</button>`
+      + `<button class="chip${mk.t === 'plan' && !mk.did ? ' on' : ''}" data-a="planDay" data-k="${k}">Будь-яке</button>`
+      + `<button class="chip${mk.t === 'rest' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="rest">Відпочинок</button>`
       + `</div>`;
   } else {
     if (when === 'today' && planned && !wks.length) {
-      h += `<button class="btn primary wide" data-a="start" data-pid="${planned.p.id}" data-did="${planned.d.id}">${I.play} Почати ${esc(planned.d.name)}</button>`;
+      h += `<button class="btn primary wide" data-a="start" data-pid="${planned.p.id}" data-did="${planned.d.id}">Почати ${esc(planned.d.name)}</button>`;
     }
     const label = when === 'today' ? (wks.length ? 'Ще одне тренування' : 'Почати тренування') : (wks.length ? 'Додати ще тренування за цей день' : 'Забув записати? Додай тренування за цей день');
     h += `<div class="dp-sec">${label}</div><div class="chips">`
-      + days.map((x) => dayChip(x, 'startOn', false, '▶ ')).join('')
-      + `<button class="chip" data-a="startOn" data-k="${k}">▶ Без програми</button></div>`;
+      + days.map((x) => dayChip(x, 'startOn', false)).join('')
+      + `<button class="chip" data-a="startOn" data-k="${k}">Без програми</button></div>`;
     h += `<div class="chips">`
-      + (when === 'past' && !wks.length ? `<button class="chip${mk.t === 'done' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="done">✔ Був у залі</button>` : '')
-      + `<button class="chip${mk.t === 'rest' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="rest">💤 Відпочинок</button>`
+      + (when === 'past' && !wks.length ? `<button class="chip${mk.t === 'done' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="done">Був у залі</button>` : '')
+      + `<button class="chip${mk.t === 'rest' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="rest">Відпочинок</button>`
       + `</div>`;
   }
   if (!days.length) {
-    h += `<div class="hint-box">Щоб тут з’явились <b>Push / Pull / Legs</b> чи твої дні — спершу додай програму.
+    h += `<div class="hint-box">Щоб вибирати тренування, спочатку додай програму.
       <div class="chips"><button class="chip on" data-a="addTemplate">+ Приклад Push / Pull / Legs</button><button class="chip" data-a="newProgram">Створити свою</button></div></div>`;
   }
   h += `<input class="in" data-f="note" data-k="${k}" value="${esc(mk.note || '')}" placeholder="Нотатка: самопочуття, сон, вага…" autocomplete="off">`;
@@ -1017,7 +1020,7 @@ function viewProgress() {
   }).filter(Boolean).sort((a, b) => b.last - a.last);
 
   if (!rows.length) {
-    return { title: 'Прогрес', actions: settingsBtn, body: `<div class="empty"><div class="big-ico">📈</div><p>Після першого тренування тут буде прогрес по кожній вправі і мапа м’язів</p></div>` };
+    return { title: 'Прогрес', actions: settingsBtn, body: `<div class="empty"><p>Тут буде прогрес після першого тренування</p></div>` };
   }
   const since = Date.now() - musclePeriod * DAY;
   let body = `<section class="card">
@@ -1059,7 +1062,7 @@ function viewProgressEx(e) {
 
   let body = `<div class="seg">${Object.entries(METRICS).map(([k, m]) => `<button class="${k === metric ? 'on' : ''}" data-a="metric" data-m="${k}">${m.label}</button>`).join('')}</div>`;
   body += `<section class="card">${chartSvg(pts, 'кг')}
-    ${metric === 'e1rm' ? '<p class="muted small" style="margin-top:6px">1ПМ — розрахунковий максимум на 1 повтор (формула Еплі). Найкраще показує силу, навіть коли змінюєш кількість повторів.</p>' : ''}
+    ${metric === 'e1rm' ? '<p class="muted small" style="margin-top:6px">1ПМ: скільки ти міг би підняти на 1 раз (рахується з ваги і повторів).</p>' : ''}
   </section>`;
   if (ss.length) {
     body += `<div class="recs">
@@ -1125,8 +1128,8 @@ function viewBody() {
   if (!list.length) {
     return {
       title: 'Тіло', actions: add,
-      body: `<div class="empty"><div class="big-ico">📏</div><p><b>Відстежуй своє тіло</b></p>
-        <p class="small">Вага, обхвати і фото прогресу. Найточніше — раз на 1–2 тижні, зранку натщесерце.</p></div>
+      body: `<div class="empty"><p><b>Замірів ще немає</b></p>
+        <p class="small">Вага, обхвати, фото. Краще міряти зранку, раз на 1–2 тижні.</p></div>
         <a class="btn primary wide" href="#/body/new">Перший замір</a>`,
     };
   }
@@ -1169,7 +1172,7 @@ function viewBody() {
 
   body += `<h2 class="sec">Усі заміри</h2><section class="card list">${list.map((e) => {
     const parts = BODY_FIELDS.filter(([f]) => bodyVal(e, f) != null).slice(0, 3).map(([f, l, u]) => `${l.toLowerCase()} ${fmtW(e.v[f])}${u === '%' ? '%' : ''}`);
-    return `<a class="li" href="#/body/${e.id}"><span class="li-date">${esc(fmtDate(e.date))}</span><span class="li-main">${esc(parts.join(' · ') || 'тільки фото')}${e.photos?.length ? ` · 📷${e.photos.length}` : ''}</span><span class="go">›</span></a>`;
+    return `<a class="li" href="#/body/${e.id}"><span class="li-date">${esc(fmtDate(e.date))}</span><span class="li-main">${esc(parts.join(' · ') || 'тільки фото')}${e.photos?.length ? ` · фото ${e.photos.length}` : ''}</span><span class="go">›</span></a>`;
   }).join('')}</section>`;
 
   return { title: 'Тіло', actions: add, body };
@@ -1192,7 +1195,7 @@ function viewBodyEdit(id) {
     <section class="card">
       <div class="bgrid">${BODY_FIELDS.map(([f, l, u]) => `<label class="bf"><span>${l}, ${u}</span>
         <input class="in num" data-f="bval" data-k="${f}" inputmode="decimal" autocomplete="off" value="${esc(bodyDraft.v[f] ?? '')}" placeholder="${lastVal(f) != null ? fmtW(lastVal(f)) : '—'}"></label>`).join('')}</div>
-      <p class="muted small" style="margin-top:10px">Заповнюй тільки потрібне. Сірим — значення з минулого заміру.</p>
+      <p class="muted small" style="margin-top:10px">Можна заповнити не все. Сірим показано минулий замір.</p>
     </section>
     <section class="card">
       <div class="ex-name">Фото</div>
@@ -1200,7 +1203,7 @@ function viewBodyEdit(id) {
         ${bodyDraft.photos.map((pid) => `<div class="ph"><img data-photo="${pid}" alt=""><button class="ph-x" data-a="draftDelPhoto" data-id="${pid}" aria-label="Прибрати фото">✕</button></div>`).join('')}
         <label class="ph add">${I.camera}<span>Додати</span><input type="file" accept="image/*" multiple data-f="photoIn" hidden></label>
       </div>
-      <p class="muted small" style="margin-top:10px">Порада: те саме світло, поза й відстань — так різницю видно найкраще. Фото зберігаються тільки на телефоні.</p>
+      <p class="muted small" style="margin-top:10px">Фоткай при тому ж світлі й з тієї ж відстані, так видно різницю. Фото лишаються на телефоні.</p>
     </section>
     <input class="in" data-f="bnote" value="${esc(bodyDraft.note)}" placeholder="Нотатка (необов’язково)" autocomplete="off">
     <button class="btn primary wide" data-a="saveBody">Зберегти</button>
@@ -1215,7 +1218,7 @@ function viewSettings() {
       <label class="field"><span>Ціль: тренувань на тиждень</span><input class="in num" data-f="goal" inputmode="numeric" value="${S.settings.weekGoal}"></label>
       <label class="field"><span>Відпочинок між підходами, сек</span><input class="in num" data-f="rest" inputmode="numeric" value="${S.settings.rest}"></label>
       <label class="field"><span>Крок ваги за замовчуванням, кг</span><input class="in num" data-f="step" inputmode="decimal" value="${fmtW(S.settings.step)}"></label>
-      <p class="muted small">Таймер відпочинку стартує сам після кожного ✓ (крім розминки). Постав 0, щоб вимкнути. Свій час для вправи — кнопка ⏱ на тренуванні.<br>Свій крок ваги для кожної вправи (гантелі, тренажери) задається в програмі біля вправи.</p>
+      <p class="muted small">Таймер запускається після кожного підходу (крім розминки). 0 вимикає. Для окремої вправи час і крок можна змінити на тренуванні та в програмі.</p>
     </section>
     <section class="card">
       <div class="ex-name">Резервна копія</div>
@@ -1403,8 +1406,8 @@ async function exportData() {
   const file = new File([json], name, { type: 'application/json' });
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: 'Gym Log — резервна копія' });
-      render(); toast('✅ Копію збережено');
+      await navigator.share({ files: [file], title: 'Gym Log, резервна копія' });
+      render(); toast('Копію збережено');
       return;
     }
   } catch (e) {
@@ -1415,7 +1418,7 @@ async function exportData() {
   a.download = name;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  render(); toast('✅ Копію збережено');
+  render(); toast('Копію збережено');
 }
 
 async function importData(file) {
@@ -1424,16 +1427,16 @@ async function importData(file) {
     d = JSON.parse(await file.text());
     if (!d || !Array.isArray(d.workouts) || !Array.isArray(d.programs) || !Array.isArray(d.exercises)) throw new Error('bad');
   } catch (e) {
-    toast('⚠️ Це не схоже на файл копії Gym Log');
+    toast('Це не файл копії Gym Log');
     return;
   }
   if (!await ask(`Відновити копію?\n${d.workouts.length} тренувань, ${(d.body || []).length} замірів, ${d.programs.length} програм.\nПоточні дані на телефоні буде замінено.`, { ok: 'Відновити', danger: true })) return;
   const ph = d.photos || {};
   delete d.photos;
-  try { for (const [id, v] of Object.entries(ph)) await photos.put(id, v); } catch (e) { toast('⚠️ Частину фото не вдалося відновити'); }
+  try { for (const [id, v] of Object.entries(ph)) await photos.put(id, v); } catch (e) { toast('Частину фото не вдалося відновити'); }
   const def = defaults();
   S = { ...def, ...d, settings: { ...def.settings, ...(d.settings || {}) } };
-  save(); go('#/'); toast('✅ Дані відновлено');
+  save(); go('#/'); toast('Дані відновлено');
 }
 
 /* ---------- Toast ---------- */
@@ -1477,7 +1480,7 @@ const A = {
         items: items.map(([n, sets, reps]) => ({ exerciseId: getOrCreateExercise(n).id, sets, reps })),
       })),
     });
-    save(); render(); toast('✅ Програму додано — можеш змінити її під себе');
+    save(); render(); toast('Програму додано');
   },
   newProgram: () => {
     const p = { id: uid(), name: '', days: [{ id: uid(), name: 'День 1', items: [] }] };
@@ -1529,7 +1532,7 @@ const A = {
     const hb = histBest(ax.exerciseId);
     const v = e1rm(w, r);
     const todayBest = Math.max(-1, ...ax.sets.filter((x) => x !== s && x.done && !x.wu).map((x) => e1rm(num(x.w) ?? 0, num(x.r) ?? 0)));
-    if (!s.wu && hb != null && w > 0 && v > hb + 1e-9 && v > todayBest) { s.pr = true; toast('🏆 Новий рекорд!'); }
+    if (!s.wu && hb != null && w > 0 && v > hb + 1e-9 && v > todayBest) { s.pr = true; toast('Новий рекорд'); }
     if (!s.wu) startRest(ax.exerciseId);
     save(); render();
   },
@@ -1539,12 +1542,18 @@ const A = {
     s.w = fmtW(Math.max(0, Math.round((base + +d.d * stepFor(ax.exerciseId)) * 100) / 100));
     save(); render();
   },
+  noteOpen: (d) => {
+    noteOpen = d.id;
+    render();
+    const i = $(`[data-f="exnote"][data-id="${d.id}"]`);
+    if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+  },
   toggleWu: (d) => {
     const s = S.active.exercises[+d.ei].sets[+d.si];
     s.wu = !s.wu;
     if (s.wu) s.pr = false;
     save(); render();
-    toast(s.wu ? 'Розминочний підхід — не йде в рекорди і статистику' : 'Робочий підхід');
+    toast(s.wu ? 'Розминка (не рахується в статистику)' : 'Робочий підхід');
   },
   plates: (d) => {
     const ax = S.active.exercises[+d.ei];
@@ -1641,7 +1650,7 @@ const A = {
       Object.assign(e, { date, v, note, photos: bodyDraft.photos });
     }
     bodyDraft = null;
-    save(); go('#/body'); toast('✅ Замір збережено');
+    save(); go('#/body'); toast('Замір збережено');
   },
   delBody: async (d) => {
     if (!await ask('Видалити цей замір разом із фото?', { ok: 'Видалити', danger: true })) return;
@@ -1674,7 +1683,7 @@ document.addEventListener('click', (e) => {
   const fn = A[b.dataset.a];
   if (fn) {
     e.preventDefault();
-    Promise.resolve(fn(b.dataset, b)).catch((err) => { console.error(err); toast('⚠️ Помилка: ' + err.message); });
+    Promise.resolve(fn(b.dataset, b)).catch((err) => { console.error(err); toast('Помилка: ' + err.message); });
   }
 });
 
@@ -1735,7 +1744,12 @@ document.addEventListener('input', (e) => {
   save();
 });
 
+document.addEventListener('focusout', (e) => {
+  if (e.target.dataset?.f === 'exnote') noteOpen = null;
+});
+
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.dataset?.f === 'exnote') { e.preventDefault(); noteOpen = null; render(); return; }
   if (e.key === 'Enter' && e.target.id === 'pq' && picker) {
     e.preventDefault();
     const first = $('#plist .pick');
@@ -1750,14 +1764,14 @@ document.addEventListener('change', async (e) => {
   if (t.dataset.f === 'isets') render();
   if (t.dataset.f === 'photoIn' && t.files.length && bodyDraft) {
     const files = [...t.files];
-    toast(`Обробка фото… (${files.length})`);
+    toast('Обробка фото…');
     for (const f of files) {
       try {
         const data = await compressImage(f);
         const pid = 'p' + uid();
         await photos.put(pid, data);
         bodyDraft.photos.push(pid);
-      } catch (err) { toast('⚠️ Не вдалося додати фото'); }
+      } catch (err) { toast('Не вдалося додати фото'); }
     }
     render();
   }

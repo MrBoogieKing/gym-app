@@ -1,5 +1,5 @@
 // Service worker: app works offline. Bump CACHE on every release.
-const CACHE = 'gymlog-v7';
+const CACHE = 'gymlog-v8';
 const ASSETS = [
   './',
   './index.html',
