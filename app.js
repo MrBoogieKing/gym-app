@@ -39,6 +39,7 @@ function defaults() {
     programs: [],
     workouts: [],
     active: null,
+    marks: {},
     settings: { rest: 90, step: 2.5, lastBackup: null },
   };
 }
@@ -94,6 +95,9 @@ function ago(ts) {
   if (n === 1) return 'вчора';
   return `${n} ${plural(n, ['день', 'дні', 'днів'])} тому`;
 }
+const dkey = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const keyToTs = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d).getTime(); };
+function weekStart(ts) { const d = new Date(ts); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); }
 const fmtDate = (ts) => new Date(ts).toLocaleDateString('uk-UA', { weekday: 'short', day: 'numeric', month: 'short' });
 const fmtDateLong = (ts) => new Date(ts).toLocaleDateString('uk-UA', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 const fmtShort = (ts) => new Date(ts).toLocaleDateString('uk-UA', { day: 'numeric', month: 'numeric' });
@@ -246,6 +250,7 @@ const svg = (d) => `<svg class="i" viewBox="0 0 24 24">${d}</svg>`;
 const I = {
   dumbbell: svg('<path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11"/>'),
   list: svg('<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>'),
+  cal: svg('<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'),
   clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
   chart: svg('<path d="M3 20h18M6 16v-4M11 16V7M16 16v-6M21 16V4" transform="translate(-1 0)"/>'),
   gear: svg('<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'),
@@ -260,6 +265,7 @@ const settingsBtn = `<a class="icon-btn" href="#/settings" aria-label="Нала�
 function viewHome() {
   if (S.active) return viewWorkout();
   let body = '';
+  if (S.marks[dkey(Date.now())]?.t === 'plan') body += `<a class="notice" href="#/calendar">📌 Сьогодні в плані тренування. Погнали!</a>`;
 
   if (S.workouts.length) {
     const week = S.workouts.filter((w) => w.startedAt >= Date.now() - 7 * DAY).length;
@@ -518,19 +524,88 @@ function chartSvg(pts) {
   const area = `${line}L${x(pts.length - 1).toFixed(1)},${H - pb}L${x(0).toFixed(1)},${H - pb}Z`;
   const grid = [0, 0.5, 1].map((f) => {
     const v = min + (max - min) * f, yy = y(v).toFixed(1);
-    return `<line x1="${pl}" x2="${W - pr}" y1="${yy}" y2="${yy}" stroke="#2c3039" stroke-dasharray="3 4"/><text x="${pl - 6}" y="${(+yy + 3).toFixed(1)}" text-anchor="end">${Math.round(v)}</text>`;
+    return `<line x1="${pl}" x2="${W - pr}" y1="${yy}" y2="${yy}" stroke="#2a2440" stroke-dasharray="3 4"/><text x="${pl - 6}" y="${(+yy + 3).toFixed(1)}" text-anchor="end">${Math.round(v)}</text>`;
   }).join('');
-  const dots = pts.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.y).toFixed(1)}" r="${i === pts.length - 1 ? 4.5 : 3}" fill="${i === pts.length - 1 ? '#ff6b35' : '#17191f'}" stroke="#ff6b35" stroke-width="2"/>`).join('');
+  const dots = pts.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.y).toFixed(1)}" r="${i === pts.length - 1 ? 4.5 : 3}" fill="${i === pts.length - 1 ? '#00f0ff' : '#120f1c'}" stroke="${i === pts.length - 1 ? '#00f0ff' : '#ff2bd6'}" stroke-width="2"/>`).join('');
   const lastV = pts[pts.length - 1].y;
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img">
-    <defs><linearGradient id="ga" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff6b35" stop-opacity=".35"/><stop offset="1" stop-color="#ff6b35" stop-opacity="0"/></linearGradient></defs>
+    <defs><linearGradient id="ga" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff2bd6" stop-opacity=".35"/><stop offset="1" stop-color="#ff2bd6" stop-opacity="0"/></linearGradient></defs>
     ${grid}
     <path d="${area}" fill="url(#ga)"/>
-    <path d="${line}" fill="none" stroke="#ff6b35" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${line}" fill="none" stroke="#ff2bd6" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
     ${dots}
     <text x="${pl}" y="${H - 6}">${fmtShort(pts[0].t)}</text>
     <text x="${W - pr}" y="${H - 6}" text-anchor="end">${fmtShort(pts[pts.length - 1].t)} · ${fmtW(Math.round(lastV * 10) / 10)} кг</text>
   </svg>`;
+}
+
+/* ---------- Calendar ---------- */
+let cal = null; // { y, m, sel }
+const MARKS = [['plan', '📌', 'План'], ['done', '✔', 'Був у залі'], ['rest', '💤', 'Відпочинок']];
+
+function weekStreak() {
+  const weeks = new Set(S.workouts.map((w) => weekStart(w.startedAt)));
+  for (const [k, m] of Object.entries(S.marks)) if (m.t === 'done') weeks.add(weekStart(keyToTs(k)));
+  let w = weekStart(Date.now());
+  if (!weeks.has(w)) w = weekStart(w - 1);
+  let n = 0;
+  while (weeks.has(w)) { n++; w = weekStart(w - 1); }
+  return n;
+}
+
+function viewCalendar() {
+  const now = new Date();
+  if (!cal) cal = { y: now.getFullYear(), m: now.getMonth(), sel: dkey(Date.now()) };
+  const { y, m } = cal;
+  const todayK = dkey(Date.now());
+  const byDay = {};
+  for (const w of S.workouts) (byDay[dkey(w.startedAt)] ||= []).push(w);
+
+  const lead = (new Date(y, m, 1).getDay() + 6) % 7;
+  const days = new Date(y, m + 1, 0).getDate();
+  let cells = '<span class="cd out"></span>'.repeat(lead);
+  let mWk = 0, mDays = 0, mPlan = 0;
+  for (let d = 1; d <= days; d++) {
+    const k = dkey(new Date(y, m, d).getTime());
+    const wks = byDay[k], mk = S.marks[k];
+    if (wks) mWk += wks.length;
+    if (wks || mk?.t === 'done') mDays++;
+    if (mk?.t === 'plan' && k >= todayK) mPlan++;
+    const cls = ['cd', k === todayK && 'today', k === cal.sel && 'sel', wks && 'wk', mk?.t && 'm-' + mk.t, mk?.note && 'note', k < todayK && 'past']
+      .filter(Boolean).join(' ');
+    cells += `<button class="${cls}" data-a="calSel" data-k="${k}">${d}</button>`;
+  }
+
+  const month = cap(new Date(y, m, 1).toLocaleDateString('uk-UA', { month: 'long', year: 'numeric' }));
+  const isThisMonth = y === now.getFullYear() && m === now.getMonth();
+  const sk = cal.sel, swk = byDay[sk] || [], smk = S.marks[sk] || {};
+
+  const body = `<div class="stats">
+      <div><b>${mDays}</b><span>днів у залі</span></div>
+      <div><b>${mPlan}</b><span>заплановано</span></div>
+      <div><b>🔥${weekStreak()}</b><span>тижнів поспіль</span></div>
+    </div>
+    <section class="card cal">
+      <div class="cal-h">
+        <button class="icon-btn" data-a="calNav" data-d="-1" aria-label="Попередній місяць">‹</button>
+        <div class="cal-m">${esc(month)}${isThisMonth ? '' : ' <button class="cal-today" data-a="calToday">сьогодні</button>'}</div>
+        <button class="icon-btn" data-a="calNav" data-d="1" aria-label="Наступний місяць">›</button>
+      </div>
+      <div class="cal-grid">
+        ${['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'].map((d) => `<span class="cal-dow">${d}</span>`).join('')}
+        ${cells}
+      </div>
+      <div class="cal-legend"><span><i class="lg wk"></i>тренування</span><span><i class="lg plan"></i>план</span><span>✔ був</span><span>💤 відпочинок</span></div>
+    </section>
+    <section class="card">
+      <div class="ex-name">${esc(cap(fmtDateLong(keyToTs(sk))))}</div>
+      ${swk.length
+        ? swk.map((w) => { const st = wStats(w); return `<a class="hist-row" href="#/history/${w.id}"><span>🏋️ ${esc(w.title)}</span><span class="r">${st.sets} підх. · ${fmtVol(st.vol)} ›</span></a>`; }).join('')
+        : `<p class="muted small" style="margin-top:4px">${sk > todayK ? 'Можна запланувати тренування' : 'Записаних тренувань немає'}</p>`}
+      <div class="marks">${MARKS.map(([t, i, l]) => `<button class="mk${smk.t === t ? ' on' : ''}" data-a="calMark" data-k="${sk}" data-t="${t}"><b>${i}</b><span>${l}</span></button>`).join('')}</div>
+      <input class="in" data-f="note" data-k="${sk}" value="${esc(smk.note || '')}" placeholder="Нотатка: самопочуття, вага тіла…" autocomplete="off">
+    </section>`;
+  return { title: 'Календар', actions: settingsBtn, body };
 }
 
 function viewSettings() {
@@ -551,7 +626,7 @@ function viewSettings() {
       <div class="muted small">Тренувань: ${S.workouts.length} · Програм: ${S.programs.length} · Вправ у бібліотеці: ${S.exercises.length}</div>
       <button class="btn danger-ghost wide" data-a="resetAll" style="margin-top:8px">Видалити всі дані</button>
     </section>
-    <p class="muted small center">Gym Log · v1.0</p>`;
+    <p class="muted small center">Gym Log · v1.1</p>`;
   return { title: 'Налаштування', back: '#/', body };
 }
 
@@ -563,6 +638,7 @@ function view() {
   const [a, b] = (location.hash.slice(1) || '/').split('/').filter(Boolean);
   switch (a) {
     case undefined: return { tab: '/', ...viewHome() };
+    case 'calendar': return { tab: '/calendar', ...viewCalendar() };
     case 'programs': return { tab: '/programs', ...viewPrograms() };
     case 'program': { const p = prog(b); if (p) return { tab: '/programs', ...viewProgram(p) }; break; }
     case 'history': {
@@ -584,7 +660,7 @@ function view() {
 }
 
 function navHtml(tab) {
-  const tabs = [['/', 'Тренування', I.dumbbell], ['/programs', 'Програми', I.list], ['/history', 'Історія', I.clock], ['/progress', 'Прогрес', I.chart]];
+  const tabs = [['/', 'Тренування', I.dumbbell], ['/calendar', 'Календар', I.cal], ['/programs', 'Програми', I.list], ['/history', 'Історія', I.clock], ['/progress', 'Прогрес', I.chart]];
   return `<nav class="nav">${tabs.map(([h, l, i]) => `<a href="#${h}" class="${tab === h ? 'on' : ''}">${i}<span>${l}</span></a>`).join('')}</nav>`;
 }
 
@@ -824,6 +900,22 @@ const A = {
   },
   restSkip: () => { S.active.restEnd = null; save(); $('#rest')?.remove(); },
 
+  // --- calendar
+  calNav: (d) => {
+    cal.m += +d.d;
+    if (cal.m < 0) { cal.m = 11; cal.y--; }
+    if (cal.m > 11) { cal.m = 0; cal.y++; }
+    render();
+  },
+  calToday: () => { cal = null; render(); },
+  calSel: (d) => { cal.sel = d.k; render(); },
+  calMark: (d) => {
+    const m = S.marks[d.k] || {};
+    m.t = m.t === d.t ? undefined : d.t;
+    if (!m.t && !m.note) delete S.marks[d.k]; else S.marks[d.k] = m;
+    save(); render();
+  },
+
   // --- history / progress
   delWorkout: (d) => {
     if (!confirm('Видалити це тренування назавжди?')) return;
@@ -874,6 +966,12 @@ document.addEventListener('input', (e) => {
     }
     case 'rest': { const n = parseInt(v, 10); if (Number.isFinite(n) && n >= 0) S.settings.rest = Math.min(n, 900); break; }
     case 'step': { const n = num(v); if (n > 0) S.settings.step = n; break; }
+    case 'note': {
+      const m = S.marks[d.k] || {};
+      m.note = v;
+      if (!m.t && !m.note) delete S.marks[d.k]; else S.marks[d.k] = m;
+      break;
+    }
     case 'pq': picker.q = v; renderPickerList(); return;
   }
   save();
@@ -899,5 +997,9 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { re
 render();
 navigator.storage?.persist?.().catch(() => {});
 if ('serviceWorker' in navigator && !['localhost', '127.0.0.1'].includes(location.hostname)) {
+  // When a new version is deployed, reload once so the update shows up immediately.
+  if (navigator.serviceWorker.controller) {
+    navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+  }
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
