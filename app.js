@@ -82,6 +82,7 @@ const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const exById = (id) => S.exercises.find((e) => e.id === id);
 const exName = (id) => exById(id)?.name ?? 'Вправа';
 const prog = (id) => S.programs.find((p) => p.id === id);
+const stepFor = (exId) => exById(exId)?.step || S.settings.step;
 function findDay(pid, did) {
   const p = prog(pid);
   const d = p?.days.find((x) => x.id === did);
@@ -235,7 +236,7 @@ function newActiveEx(exerciseId, plan) {
   const n = plan?.sets || last?.length || 3;
   return {
     exerciseId,
-    plan: plan && plan.sets ? { sets: plan.sets, reps: plan.reps || null } : null,
+    plan: plan && (plan.sets || plan.w != null) ? { sets: plan.sets || null, reps: plan.reps || null, w: plan.w ?? null, wAt: plan.wAt || 0 } : null,
     sets: Array.from({ length: n }, () => ({ w: '', r: '', done: false })),
   };
 }
@@ -267,7 +268,10 @@ function hint(ax, si) {
   const prev = si > 0 ? ax.sets[si - 1] : null;
   const prevW = prev ? num(prev.w) : null;
   const prevR = prev ? num(prev.r) : null;
-  const w = prevW ?? lastS?.w ?? (prev ? hint(ax, si - 1).w : null);
+  const lastTime = last ? sessionsFor(ax.exerciseId)[0].wk.startedAt : 0;
+  const pw = ax.plan?.w ?? null;
+  const planFresh = pw != null && (!last || ax.plan.wAt > lastTime);
+  const w = prevW ?? (planFresh ? pw : null) ?? lastS?.w ?? pw ?? (prev ? hint(ax, si - 1).w : null);
   const r = ax.plan?.reps || prevR || lastS?.r || null;
   return { w, r };
 }
@@ -473,11 +477,13 @@ function viewWorkout() {
 function exCard(ax, ei) {
   const last = lastSets(ax.exerciseId);
   const done = ax.sets.filter((s) => s.done).length;
-  const meta = [ax.plan ? `план ${ax.plan.sets} × ${ax.plan.reps || '—'}` : '', `${done}/${ax.sets.length} підх.`].filter(Boolean).join(' · ');
+  const pl = ax.plan;
+  const planTxt = pl ? 'план ' + [pl.sets ? `${pl.sets}×${pl.reps || '—'}` : '', pl.w != null ? `${fmtW(pl.w)} кг` : ''].filter(Boolean).join(' · ') : '';
+  const meta = [planTxt, `${done}/${ax.sets.length} підх.`, `крок ${fmtW(stepFor(ax.exerciseId))} кг`].filter(Boolean).join(' · ');
   const lastTxt = last ? last.map((s) => `${fmtW(s.w)}×${s.r}`).join(' · ') : 'вперше 🎉';
   let tip = '';
   if (last && ax.plan?.reps && last.length >= ax.plan.sets && last.every((s) => s.r >= ax.plan.reps) && last[0].w > 0) {
-    tip = `<div class="tip">⚡ Минулого разу план виконано — спробуй +${fmtW(S.settings.step)} кг</div>`;
+    tip = `<div class="tip">⚡ Минулого разу план виконано — спробуй +${fmtW(stepFor(ax.exerciseId))} кг</div>`;
   }
   return `<section class="card ex${done && done === ax.sets.length ? ' complete' : ''}">
     <div class="ex-h">
@@ -526,23 +532,33 @@ function viewPrograms() {
 function viewProgram(p) {
   const days = p.days.map((d, di) => {
     const at = `data-pid="${p.id}" data-di="${di}"`;
-    const items = d.items.map((it, ii) => `<div class="item">
+    const items = d.items.map((it, ii) => {
+      const lw = lastSets(it.exerciseId)?.[0]?.w;
+      const ex = exById(it.exerciseId);
+      const ai = `${at} data-ii="${ii}" autocomplete="off"`;
+      return `<div class="item">
+        <div class="item-top">
         <div class="item-n">${esc(exName(it.exerciseId))}</div>
-        <input class="in num" data-f="isets" ${at} data-ii="${ii}" inputmode="numeric" value="${it.sets ?? ''}" placeholder="підх." aria-label="Підходи">
-        <span class="x">×</span>
-        <input class="in num" data-f="ireps" ${at} data-ii="${ii}" inputmode="numeric" value="${it.reps ?? ''}" placeholder="повт." aria-label="Повтори">
         <div class="item-a">
           <button class="icon-btn sm" data-a="moveItem" ${at} data-ii="${ii}" data-d="-1" ${ii === 0 ? 'disabled' : ''} aria-label="Вгору">↑</button>
           <button class="icon-btn sm" data-a="moveItem" ${at} data-ii="${ii}" data-d="1" ${ii === d.items.length - 1 ? 'disabled' : ''} aria-label="Вниз">↓</button>
           <button class="icon-btn sm" data-a="delItem" ${at} data-ii="${ii}" aria-label="Видалити">✕</button>
         </div>
-      </div>`).join('');
+        </div>
+        <div class="item-f">
+          <label><span>Підходи</span><input class="in num" data-f="isets" ${ai} inputmode="numeric" value="${it.sets ?? ''}" placeholder="—"></label>
+          <label><span>Повтори</span><input class="in num" data-f="ireps" ${ai} inputmode="numeric" value="${it.reps ?? ''}" placeholder="—"></label>
+          <label><span>Вага, кг</span><input class="in num" data-f="iw" ${ai} inputmode="decimal" value="${it.w != null ? fmtW(it.w) : ''}" placeholder="${lw != null ? fmtW(lw) : '—'}"></label>
+          <label><span>Крок, +кг</span><input class="in num" data-f="istep" ${ai} inputmode="decimal" value="${ex?.step ? fmtW(ex.step) : ''}" placeholder="${fmtW(S.settings.step)}"></label>
+        </div>
+      </div>`;
+    }).join('');
     return `<section class="card">
       <div class="day-h">
         <input class="in" data-f="dname" ${at} value="${esc(d.name)}" placeholder="Назва дня, напр. Груди">
         <button class="icon-btn" data-a="delDay" ${at} aria-label="Видалити день">✕</button>
       </div>
-      ${d.items.length ? '<div class="muted small">підходи × повтори</div>' : '<p class="muted small">Додай вправи в цей день</p>'}
+      ${d.items.length ? '' : '<p class="muted small">Додай вправи в цей день</p>'}
       ${items}
       <button class="btn sm" data-a="addItem" ${at}>+ вправа</button>
     </section>`;
@@ -899,8 +915,8 @@ function viewSettings() {
   const body = `<section class="card">
       <label class="field"><span>Ціль: тренувань на тиждень</span><input class="in num" data-f="goal" inputmode="numeric" value="${S.settings.weekGoal}"></label>
       <label class="field"><span>Відпочинок між підходами, сек</span><input class="in num" data-f="rest" inputmode="numeric" value="${S.settings.rest}"></label>
-      <label class="field"><span>Крок ваги для кнопок − / +, кг</span><input class="in num" data-f="step" inputmode="decimal" value="${fmtW(S.settings.step)}"></label>
-      <p class="muted small">Таймер відпочинку стартує сам після кожного ✓. Постав 0, щоб вимкнути.</p>
+      <label class="field"><span>Крок ваги за замовчуванням, кг</span><input class="in num" data-f="step" inputmode="decimal" value="${fmtW(S.settings.step)}"></label>
+      <p class="muted small">Таймер відпочинку стартує сам після кожного ✓. Постав 0, щоб вимкнути.<br>Свій крок ваги для кожної вправи (гантелі, тренажери) задається в програмі біля вправи.</p>
     </section>
     <section class="card">
       <div class="ex-name">Резервна копія</div>
@@ -1221,7 +1237,7 @@ const A = {
   wStep: (d) => {
     const ax = S.active.exercises[+d.ei], s = ax.sets[+d.si];
     const base = num(s.w) ?? hint(ax, +d.si).w ?? 0;
-    s.w = fmtW(Math.max(0, Math.round((base + +d.d * S.settings.step) * 100) / 100));
+    s.w = fmtW(Math.max(0, Math.round((base + +d.d * stepFor(ax.exerciseId)) * 100) / 100));
     save(); render();
   },
   addSet: (d) => { S.active.exercises[+d.ei].sets.push({ w: '', r: '', done: false }); save(); render(); },
@@ -1353,6 +1369,19 @@ document.addEventListener('input', (e) => {
       const it = prog(d.pid).days[+d.di].items[+d.ii];
       const n = parseInt(v, 10);
       it[f === 'isets' ? 'sets' : 'reps'] = Number.isFinite(n) && n > 0 ? n : null;
+      break;
+    }
+    case 'iw': {
+      const it = prog(d.pid).days[+d.di].items[+d.ii];
+      const n = num(v);
+      it.w = n != null && n >= 0 ? n : null;
+      it.wAt = Date.now();
+      break;
+    }
+    case 'istep': {
+      const ex = exById(prog(d.pid).days[+d.di].items[+d.ii].exerciseId);
+      const n = num(v);
+      if (ex) { if (n > 0) ex.step = n; else delete ex.step; }
       break;
     }
     case 'goal': { const n = parseInt(v, 10); if (n >= 1 && n <= 7) S.settings.weekGoal = n; break; }
