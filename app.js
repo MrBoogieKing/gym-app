@@ -1,8 +1,9 @@
 'use strict';
 
 /* =====================================================================
-   Gym Log — a tiny offline-first workout tracker (no dependencies).
-   All data lives in localStorage on the device.
+   Gym Log — offline-first workout & body tracker. No dependencies.
+   Data   → localStorage (one JSON object, see defaults()).
+   Photos → IndexedDB (too big for localStorage).
    ===================================================================== */
 
 const KEY = 'gymlog.v1';
@@ -32,15 +33,22 @@ const TEMPLATE = {
   ],
 };
 
+// Body measurements: [key, label, unit]
+const BODY_FIELDS = [
+  ['weight', 'Вага', 'кг'], ['fat', 'Жир', '%'], ['chest', 'Груди', 'см'], ['waist', 'Талія', 'см'],
+  ['hips', 'Сідниці', 'см'], ['arm', 'Біцепс', 'см'], ['thigh', 'Стегно', 'см'], ['neck', 'Шия', 'см'],
+];
+
 function defaults() {
   return {
     version: 1,
     exercises: DEFAULT_EXERCISES.map((name) => ({ id: uid(), name })),
     programs: [],
     workouts: [],
+    body: [],
+    marks: {},       // 'YYYY-MM-DD' → { t: 'plan'|'done'|'rest', pid, did, note }
     active: null,
-    marks: {},
-    settings: { rest: 90, step: 2.5, lastBackup: null },
+    settings: { rest: 90, step: 2.5, weekGoal: 3, lastBackup: null },
   };
 }
 
@@ -68,11 +76,18 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (v) => { if (v === '' || v == null) return null; const n = parseFloat(String(v).replace(',', '.')); return Number.isFinite(n) ? n : null; };
 const fmtW = (n) => (n == null ? '' : String(Math.round(n * 100) / 100));
+const round1 = (n) => Math.round(n * 10) / 10;
 const e1rm = (w, r) => (r <= 1 ? w : w * (1 + r / 30));
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const exById = (id) => S.exercises.find((e) => e.id === id);
 const exName = (id) => exById(id)?.name ?? 'Вправа';
 const prog = (id) => S.programs.find((p) => p.id === id);
+function findDay(pid, did) {
+  const p = prog(pid);
+  const d = p?.days.find((x) => x.id === did);
+  return d ? { p, d } : null;
+}
+const allDays = () => S.programs.flatMap((p) => p.days.map((d) => ({ p, d })));
 
 function plural(n, [one, few, many]) {
   const m10 = n % 10, m100 = n % 100;
@@ -88,19 +103,21 @@ function getOrCreateExercise(name) {
   return e;
 }
 
+const WD = ['Нд', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+const dkey = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const keyToTs = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d).getTime(); };
 function startOfDay(ts) { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function weekStart(ts) { const d = new Date(ts); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); }
 function ago(ts) {
   const n = Math.round((startOfDay(Date.now()) - startOfDay(ts)) / DAY);
   if (n <= 0) return 'сьогодні';
   if (n === 1) return 'вчора';
   return `${n} ${plural(n, ['день', 'дні', 'днів'])} тому`;
 }
-const dkey = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-const keyToTs = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d).getTime(); };
-function weekStart(ts) { const d = new Date(ts); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); }
 const fmtDate = (ts) => new Date(ts).toLocaleDateString('uk-UA', { weekday: 'short', day: 'numeric', month: 'short' });
-const fmtDateLong = (ts) => new Date(ts).toLocaleDateString('uk-UA', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const fmtDateLong = (ts) => new Date(ts).toLocaleDateString('uk-UA', { weekday: 'long', day: 'numeric', month: 'long' });
 const fmtShort = (ts) => new Date(ts).toLocaleDateString('uk-UA', { day: 'numeric', month: 'numeric' });
+const fmtTime = (ts) => new Date(ts).toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
 function fmtDur(ms) {
   const t = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
@@ -117,14 +134,67 @@ function fmtClock(ms) {
 }
 const fmtVol = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1).replace('.', ',')} т` : `${Math.round(v)} кг`);
 
+/* ---------- Photo store (IndexedDB) ---------- */
+const photos = (() => {
+  let dbp = null;
+  const open = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open('gymlog', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('photos');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  }));
+  const run = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('photos', mode);
+      const req = fn(tx.objectStore('photos'));
+      tx.oncomplete = () => res(req ? req.result : undefined);
+      tx.onerror = () => rej(tx.error);
+      tx.onabort = () => rej(tx.error);
+    });
+  };
+  const cache = new Map();
+  return {
+    async get(id) {
+      if (cache.has(id)) return cache.get(id);
+      const v = await run('readonly', (s) => s.get(id));
+      if (v) cache.set(id, v);
+      return v;
+    },
+    async put(id, v) { cache.set(id, v); await run('readwrite', (s) => s.put(v, id)); },
+    async del(id) { cache.delete(id); await run('readwrite', (s) => s.delete(id)); },
+    keys: () => run('readonly', (s) => s.getAllKeys()),
+  };
+})();
+
+async function hydratePhotos(root = document) {
+  for (const img of root.querySelectorAll('img[data-photo]:not([src])')) {
+    try { const v = await photos.get(img.dataset.photo); if (v) img.src = v; } catch (e) { /* ignore */ }
+  }
+}
+
+function loadImg(src) {
+  return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+}
+// Downscale to max 1280px JPEG so photos stay small (~150–300 KB).
+async function compressImage(file, max = 1280, q = 0.82) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await loadImg(url);
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k);
+    c.height = Math.round(img.naturalHeight * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', q);
+  } finally { URL.revokeObjectURL(url); }
+}
+
 /* ---------- History queries ---------- */
 // Sessions of an exercise, newest first: [{ wk, sets }]
 function sessionsFor(exId) {
   const out = [];
-  for (let i = S.workouts.length - 1; i >= 0; i--) {
-    const wk = S.workouts[i];
-    for (const e of wk.exercises) if (e.exerciseId === exId && e.sets.length) out.push({ wk, sets: e.sets });
-  }
+  for (const wk of S.workouts) for (const e of wk.exercises) if (e.exerciseId === exId && e.sets.length) out.push({ wk, sets: e.sets });
   return out.sort((a, b) => b.wk.startedAt - a.wk.startedAt);
 }
 const lastSets = (exId) => sessionsFor(exId)[0]?.sets ?? null;
@@ -143,6 +213,22 @@ function wStats(wk) {
   return { sets, vol };
 }
 
+function workoutsByDay() {
+  const m = {};
+  for (const w of S.workouts) (m[dkey(w.startedAt)] ||= []).push(w);
+  return m;
+}
+
+function weekStreak() {
+  const weeks = new Set(S.workouts.map((w) => weekStart(w.startedAt)));
+  for (const [k, m] of Object.entries(S.marks)) if (m.t === 'done') weeks.add(weekStart(keyToTs(k)));
+  let w = weekStart(Date.now());
+  if (!weeks.has(w)) w = weekStart(w - 1);
+  let n = 0;
+  while (weeks.has(w)) { n++; w = weekStart(w - 1); }
+  return n;
+}
+
 /* ---------- Active workout ---------- */
 function newActiveEx(exerciseId, plan) {
   const last = lastSets(exerciseId);
@@ -154,17 +240,20 @@ function newActiveEx(exerciseId, plan) {
   };
 }
 
-function startWorkout(pid, did) {
-  const p = pid ? prog(pid) : null;
-  const d = p ? p.days.find((x) => x.id === did) : null;
+// dateKey: log the workout for another (past) day.
+function startWorkout(pid, did, dateKey = null) {
+  if (S.active) { toast('Спочатку заверши поточне тренування'); go('#/'); return; }
+  const fd = pid && did ? findDay(pid, did) : null;
+  const d = fd?.d;
   S.active = {
     id: uid(),
     startedAt: Date.now(),
-    programId: p?.id ?? null,
+    programId: fd?.p.id ?? null,
     dayId: d?.id ?? null,
-    title: d ? d.name || 'Тренування' : 'Тренування',
+    title: d?.name || 'Тренування',
     exercises: d ? d.items.map((it) => newActiveEx(it.exerciseId, it)) : [],
     restEnd: null,
+    dateKey: dateKey && dateKey !== dkey(Date.now()) ? dateKey : null,
   };
   save();
   go('#/');
@@ -196,7 +285,7 @@ function startRest() {
   S.active.restBeeped = false;
 }
 
-function finishWorkout() {
+async function finishWorkout() {
   const a = S.active;
   const exercises = a.exercises
     .map((ax) => ({
@@ -210,11 +299,19 @@ function finishWorkout() {
     .filter((e) => e.sets.length);
 
   if (!exercises.length) {
-    if (confirm('Жодного підходу не відмічено ✓. Скасувати тренування?')) { S.active = null; save(); render(); }
+    if (await ask('Жодного підходу не відмічено ✓.\nВийти без збереження?', { ok: 'Вийти', danger: true })) {
+      S.active = null; save(); render();
+    }
     return;
   }
-  if (!confirm('Завершити тренування?')) return;
-  const wk = { id: a.id, startedAt: a.startedAt, finishedAt: Date.now(), programId: a.programId, dayId: a.dayId, title: a.title, exercises };
+  if (!await ask('Завершити й зберегти тренування?', { ok: 'Завершити' })) return;
+  let startedAt = a.startedAt, finishedAt = Date.now();
+  if (a.dateKey) { // backdated: keep duration, move to that day 18:00
+    const dur = finishedAt - startedAt;
+    startedAt = keyToTs(a.dateKey) + 18 * 3600e3;
+    finishedAt = startedAt + dur;
+  }
+  const wk = { id: a.id, startedAt, finishedAt, programId: a.programId, dayId: a.dayId, title: a.title, exercises };
   S.workouts.push(wk);
   S.active = null;
   save();
@@ -249,14 +346,23 @@ function beep() {
 const svg = (d) => `<svg class="i" viewBox="0 0 24 24">${d}</svg>`;
 const I = {
   dumbbell: svg('<path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11"/>'),
+  cal: svg('<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'),
+  chart: svg('<path d="M4 19l5-6 4 3 7-9"/><path d="M15 7h5v5"/>'),
+  body: svg('<circle cx="12" cy="4.8" r="2.3"/><path d="M5 9.5h14M12 9.5v5.5M12 15l-3.2 6M12 15l3.2 6"/>'),
   list: svg('<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>'),
-  cal: svg('<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'),
-  clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
-  chart: svg('<path d="M3 20h18M6 16v-4M11 16V7M16 16v-6M21 16V4" transform="translate(-1 0)"/>'),
   gear: svg('<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'),
+  camera: svg('<path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>'),
   play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l13-7.5z"/></svg>',
 };
 const settingsBtn = `<a class="icon-btn" href="#/settings" aria-label="Налаштування">${I.gear}</a>`;
+
+function ring(v, max) {
+  const r = 26, c = 2 * Math.PI * r, p = Math.min(1, max ? v / max : 0);
+  return `<div class="ring${p >= 1 ? ' full' : ''}" aria-label="${v} з ${max} тренувань цього тижня">
+    <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="${r}" class="ring-bg"/>${p > 0 ? `<circle cx="32" cy="32" r="${r}" class="ring-fg" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 32 32)"/>` : ''}</svg>
+    <div class="ring-t"><b>${v}</b><span>з ${max}</span></div>
+  </div>`;
+}
 
 /* =====================================================================
    Views
@@ -264,21 +370,56 @@ const settingsBtn = `<a class="icon-btn" href="#/settings" aria-label="Нала�
 
 function viewHome() {
   if (S.active) return viewWorkout();
-  let body = '';
-  if (S.marks[dkey(Date.now())]?.t === 'plan') body += `<a class="notice" href="#/calendar">📌 Сьогодні в плані тренування. Погнали!</a>`;
+  const now = Date.now(), todayK = dkey(now);
+  const byDay = workoutsByDay();
+  const tm = S.marks[todayK];
+  const doneToday = byDay[todayK];
+  const planned = tm?.t === 'plan' && tm.did ? findDay(tm.pid, tm.did) : null;
 
-  if (S.workouts.length) {
-    const week = S.workouts.filter((w) => w.startedAt >= Date.now() - 7 * DAY).length;
-    const last = Math.max(...S.workouts.map((w) => w.startedAt));
-    body += `<div class="stats">
-      <div><b>${week}</b><span>за 7 днів</span></div>
-      <div><b>${S.workouts.length}</b><span>всього</span></div>
-      <div><b>${cap(ago(last))}</b><span>останнє</span></div>
-    </div>`;
-    const lb = S.settings.lastBackup;
-    if (S.workouts.length >= 3 && (!lb || Date.now() - lb > 14 * DAY)) {
-      body += `<a class="notice" href="#/settings">💾 ${lb ? 'Давно не було' : 'Ще немає'} резервної копії. Зроби її — це 2 секунди →</a>`;
-    }
+  // This week
+  const ws = weekStart(now);
+  const weekDays = new Set();
+  for (const w of S.workouts) if (w.startedAt >= ws && w.startedAt < ws + 7 * DAY) weekDays.add(dkey(w.startedAt));
+  for (const [k, m] of Object.entries(S.marks)) { const t = keyToTs(k); if (m.t === 'done' && t >= ws && t < ws + 7 * DAY) weekDays.add(k); }
+
+  let headline = 'Готовий до залу?';
+  if (doneToday) headline = 'Сьогодні вже відпрацьовано 💪';
+  else if (planned) headline = `Сьогодні за планом: ${planned.d.name}`;
+  else if (tm?.t === 'plan') headline = 'Сьогодні в плані тренування';
+  else if (tm?.t === 'rest') headline = 'Сьогодні відпочинок 😴';
+
+  let strip = '';
+  for (let i = 0; i < 7; i++) {
+    const t = ws + i * DAY + 12 * 3600e3;
+    const k = dkey(t), m = S.marks[k];
+    const cls = ['wd', k === todayK && 'today', byDay[k] && 'wk', !byDay[k] && m?.t === 'done' && 'done', !byDay[k] && m?.t === 'plan' && 'plan', m?.t === 'rest' && 'rest']
+      .filter(Boolean).join(' ');
+    strip += `<button class="${cls}" data-a="goDay" data-k="${k}"><span>${WD[new Date(t).getDay()]}</span><b>${new Date(t).getDate()}</b></button>`;
+  }
+
+  let body = `<section class="card hero">
+    <div class="hero-top">
+      <div class="hero-txt">
+        <div class="eyebrow">${esc(cap(fmtDateLong(now)))}</div>
+        <div class="hero-title">${esc(headline)}</div>
+      </div>
+      ${ring(weekDays.size, S.settings.weekGoal || 3)}
+    </div>
+    <div class="week">${strip}</div>
+    ${planned && !doneToday ? `<button class="btn primary wide" data-a="start" data-pid="${planned.p.id}" data-did="${planned.d.id}">${I.play} Почати ${esc(planned.d.name)}</button>` : ''}
+  </section>`;
+
+  const upcoming = Object.entries(S.marks).filter(([k, m]) => m.t === 'plan' && k > todayK).sort(([a], [b]) => (a < b ? -1 : 1)).slice(0, 3);
+  if (upcoming.length) {
+    body += `<h2 class="sec">Заплановано</h2><section class="card list">${upcoming.map(([k, m]) => {
+      const fd = m.did ? findDay(m.pid, m.did) : null;
+      return `<button class="li" data-a="goDay" data-k="${k}"><span class="li-date">${esc(fmtDate(keyToTs(k)))}</span><b>${esc(fd ? fd.d.name : 'Тренування')}</b><span class="go">›</span></button>`;
+    }).join('')}</section>`;
+  }
+
+  const lb = S.settings.lastBackup;
+  if (S.workouts.length >= 3 && (!lb || now - lb > 14 * DAY)) {
+    body += `<a class="notice" href="#/settings">💾 ${lb ? 'Давно не було' : 'Ще немає'} резервної копії — зроби її, це 2 секунди →</a>`;
   }
 
   if (!S.programs.length) {
@@ -293,15 +434,15 @@ function viewHome() {
     for (const p of S.programs) {
       const lastOfProg = S.workouts.filter((w) => w.programId === p.id).sort((a, b) => b.startedAt - a.startedAt)[0];
       const lastIdx = lastOfProg ? p.days.findIndex((d) => d.id === lastOfProg.dayId) : -1;
-      const nextId = p.days.length ? p.days[(lastIdx + 1) % p.days.length].id : null;
+      const nextId = planned && planned.p.id === p.id ? planned.d.id : (p.days.length ? p.days[(lastIdx + 1) % p.days.length].id : null);
       body += `<h2 class="sec">${esc(p.name || 'Без назви')}</h2>`;
       for (const d of p.days) {
         const lastDay = S.workouts.filter((w) => w.dayId === d.id).sort((a, b) => b.startedAt - a.startedAt)[0];
-        const isNext = d.id === nextId && p.days.length > 1;
+        const isNext = d.id === nextId && p.days.length > 1 && !doneToday;
         const n = d.items.length;
         body += `<button class="card day${isNext ? ' next' : ''}" data-a="start" data-pid="${p.id}" data-did="${d.id}">
           <div class="day-main">
-            <div class="day-name">${esc(d.name || 'День')}${isNext ? '<span class="badge">Наступне</span>' : ''}</div>
+            <div class="day-name">${esc(d.name || 'День')}${isNext ? `<span class="badge">${planned?.d.id === d.id ? 'За планом' : 'Наступне'}</span>` : ''}</div>
             <div class="muted small">${n} ${plural(n, ['вправа', 'вправи', 'вправ'])} · ${lastDay ? 'було ' + ago(lastDay.startedAt) : 'ще не було'}</div>
             ${n ? `<div class="day-ex small">${d.items.map((it) => esc(exName(it.exerciseId))).join(' · ')}</div>` : ''}
           </div>
@@ -320,7 +461,7 @@ function viewWorkout() {
   const empty = a.exercises.length ? '' : `<div class="empty"><p>Додай першу вправу</p></div>`;
   return {
     title: esc(a.title),
-    sub: `⏱ <span id="elapsed">${fmtDur(Date.now() - a.startedAt)}</span>`,
+    sub: `${a.dateKey ? '📅 ' + esc(fmtDate(keyToTs(a.dateKey))) + ' · ' : ''}⏱ <span id="elapsed">${fmtDur(Date.now() - a.startedAt)}</span>`,
     actions: `<button class="btn primary sm" data-a="finish">Завершити</button>`,
     body: empty + cards
       + `<button class="btn ghost wide" data-a="addEx">+ Додати вправу</button>`
@@ -332,17 +473,17 @@ function exCard(ax, ei) {
   const last = lastSets(ax.exerciseId);
   const done = ax.sets.filter((s) => s.done).length;
   const meta = [ax.plan ? `план ${ax.plan.sets} × ${ax.plan.reps || '—'}` : '', `${done}/${ax.sets.length} підх.`].filter(Boolean).join(' · ');
-  const lastTxt = last ? last.map((s) => `${fmtW(s.w)}×${s.r}`).join(' · ') : 'ще не робив — вперше 🎉';
+  const lastTxt = last ? last.map((s) => `${fmtW(s.w)}×${s.r}`).join(' · ') : 'вперше 🎉';
   let tip = '';
   if (last && ax.plan?.reps && last.length >= ax.plan.sets && last.every((s) => s.r >= ax.plan.reps) && last[0].w > 0) {
-    tip = `<div class="tip">💪 Минулого разу план виконано — спробуй +${fmtW(S.settings.step)} кг</div>`;
+    tip = `<div class="tip">⚡ Минулого разу план виконано — спробуй +${fmtW(S.settings.step)} кг</div>`;
   }
-  return `<section class="card">
+  return `<section class="card ex${done && done === ax.sets.length ? ' complete' : ''}">
     <div class="ex-h">
       <div><div class="ex-name">${esc(exName(ax.exerciseId))}</div><div class="muted small">${meta}</div></div>
       <button class="icon-btn" data-a="removeEx" data-ei="${ei}" aria-label="Прибрати вправу">✕</button>
     </div>
-    <div class="last small"><span class="muted">Минулого разу:</span> ${lastTxt}</div>
+    <div class="last small"><span class="muted">Минулого разу:</span> <span class="mono">${lastTxt}</span></div>
     ${tip}
     <div class="sets-head small muted"><span>#</span><span>кг</span><span></span><span>повт.</span><span></span></div>
     ${ax.sets.map((s, si) => setRow(ax, ei, s, si)).join('')}
@@ -415,23 +556,32 @@ function viewProgram(p) {
   };
 }
 
-function viewHistory() {
-  if (!S.workouts.length) {
-    return { title: 'Історія', actions: settingsBtn, body: `<div class="empty"><div class="big-ico">🗓️</div><p>Тут з’являться твої тренування</p></div>` };
-  }
+function historyListHtml() {
+  if (!S.workouts.length) return `<div class="empty"><div class="big-ico">🗓️</div><p>Тут з’являться твої тренування</p></div>`;
   const list = [...S.workouts].sort((a, b) => b.startedAt - a.startedAt);
-  let body = '', month = '';
+  let html = '', month = '';
   for (const wk of list) {
     const m = cap(new Date(wk.startedAt).toLocaleDateString('uk-UA', { month: 'long', year: 'numeric' }));
-    if (m !== month) { month = m; body += `<h2 class="sec">${esc(m)}</h2>`; }
+    if (m !== month) { month = m; html += `<h2 class="sec">${esc(m)}</h2>`; }
     const st = wStats(wk);
-    body += `<a class="card row" href="#/history/${wk.id}">
+    html += `<a class="card row" href="#/history/${wk.id}">
       <div><div class="ex-name">${esc(wk.title)}</div>
       <div class="muted small">${fmtDate(wk.startedAt)} · ${fmtMin(wk.finishedAt - wk.startedAt)} · ${st.sets} підх. · ${fmtVol(st.vol)}</div></div>
       <span class="go">›</span>
     </a>`;
   }
-  return { title: 'Історія', actions: settingsBtn, body };
+  return html;
+}
+
+function workoutSummaryHtml(w) {
+  const st = wStats(w);
+  return `<div class="wk-card">
+    <a class="wk-head" href="#/history/${w.id}">
+      <div><b>${esc(w.title)}</b><div class="muted small">${fmtTime(w.startedAt)} · ${fmtMin(w.finishedAt - w.startedAt)} · ${st.sets} підх. · ${fmtVol(st.vol)}</div></div>
+      <span class="go">›</span>
+    </a>
+    ${w.exercises.map((e) => `<div class="wk-ex"><span>${esc(exName(e.exerciseId))}</span><span class="mono">${e.sets.map((s) => `${fmtW(s.w)}×${s.r}${s.pr ? '🏆' : ''}`).join(' · ')}</span></div>`).join('')}
+  </div>`;
 }
 
 function viewWorkoutDetail(wk) {
@@ -446,9 +596,107 @@ function viewWorkoutDetail(wk) {
       <div class="setlist">${e.sets.map((s, i) => `<div><span class="muted">${i + 1}.</span> ${fmtW(s.w)} кг × ${s.r}${s.pr ? ' 🏆' : ''}</div>`).join('')}</div>
     </section>`).join('')
     + `<button class="btn danger-ghost wide" data-a="delWorkout" data-id="${wk.id}">Видалити тренування</button>`;
-  return { title: esc(wk.title), sub: cap(fmtDateLong(wk.startedAt)), back: '#/history', body };
+  return { title: esc(wk.title), sub: esc(cap(fmtDateLong(wk.startedAt))) + ' · ' + fmtTime(wk.startedAt), back: '#/calendar', body };
 }
 
+/* ---------- Calendar ---------- */
+let cal = null; // { y, m, sel, mode: 'month'|'list' }
+function calInit() {
+  if (!cal) { const n = new Date(); cal = { y: n.getFullYear(), m: n.getMonth(), sel: dkey(Date.now()), mode: 'month' }; }
+}
+
+function viewCalendar() {
+  calInit();
+  const seg = `<div class="seg"><button class="${cal.mode === 'month' ? 'on' : ''}" data-a="calMode" data-m="month">Календар</button><button class="${cal.mode === 'list' ? 'on' : ''}" data-a="calMode" data-m="list">Історія</button></div>`;
+  if (cal.mode === 'list') return { title: 'Календар', actions: settingsBtn, body: seg + historyListHtml() };
+
+  const now = new Date();
+  const { y, m } = cal;
+  const todayK = dkey(Date.now());
+  const byDay = workoutsByDay();
+  const lead = (new Date(y, m, 1).getDay() + 6) % 7;
+  const days = new Date(y, m + 1, 0).getDate();
+  let cells = '<span class="cd out"></span>'.repeat(lead);
+  let mDays = 0, mPlan = 0;
+  for (let d = 1; d <= days; d++) {
+    const k = dkey(new Date(y, m, d).getTime());
+    const wks = byDay[k], mk = S.marks[k];
+    if (wks || mk?.t === 'done') mDays++;
+    if (mk?.t === 'plan' && k >= todayK && !wks) mPlan++;
+    const cls = ['cd', k === todayK && 'today', k === cal.sel && 'sel', wks && 'wk', !wks && mk?.t && 'm-' + mk.t, mk?.note && 'note', k < todayK && 'past']
+      .filter(Boolean).join(' ');
+    cells += `<button class="${cls}" data-a="calSel" data-k="${k}"><span>${d}</span></button>`;
+  }
+  const month = cap(new Date(y, m, 1).toLocaleDateString('uk-UA', { month: 'long', year: 'numeric' }));
+  const isThisMonth = y === now.getFullYear() && m === now.getMonth();
+
+  const body = seg + `<div class="stats">
+      <div><b>${mDays}</b><span>днів у залі</span></div>
+      <div><b>${mPlan}</b><span>заплановано</span></div>
+      <div><b>${weekStreak()}🔥</b><span>тижнів поспіль</span></div>
+    </div>
+    <section class="card cal">
+      <div class="cal-h">
+        <button class="icon-btn" data-a="calNav" data-d="-1" aria-label="Попередній місяць">‹</button>
+        <div class="cal-m">${esc(month)}${isThisMonth ? '' : '<button class="cal-today" data-a="calToday">до сьогодні</button>'}</div>
+        <button class="icon-btn" data-a="calNav" data-d="1" aria-label="Наступний місяць">›</button>
+      </div>
+      <div class="cal-grid">
+        ${['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'].map((d) => `<span class="cal-dow">${d}</span>`).join('')}
+        ${cells}
+      </div>
+      <div class="cal-legend"><span><i class="lg wk"></i>тренування</span><span><i class="lg plan"></i>план</span><span><i class="lg done"></i>був</span><span><i class="lg rest"></i>відпочинок</span></div>
+    </section>
+    ${dayPanelHtml(cal.sel, byDay)}`;
+  return { title: 'Календар', actions: settingsBtn, body };
+}
+
+function dayPanelHtml(k, byDay) {
+  const todayK = dkey(Date.now());
+  const when = k === todayK ? 'today' : k > todayK ? 'future' : 'past';
+  const wks = byDay[k] || [];
+  const mk = S.marks[k] || {};
+  const planned = mk.t === 'plan' && mk.did ? findDay(mk.pid, mk.did) : null;
+  const days = allDays();
+  const multi = S.programs.length > 1;
+  const dayChip = ({ p, d }, a, on, prefix = '') => `<button class="chip${on ? ' on' : ''}" data-a="${a}" data-k="${k}" data-pid="${p.id}" data-did="${d.id}">${prefix}${esc(d.name)}${multi ? `<small>${esc(p.name)}</small>` : ''}</button>`;
+
+  let h = `<section class="card day-panel">
+    <div class="eyebrow">${when === 'today' ? 'Сьогодні' : when === 'future' ? 'Попереду' : ago(keyToTs(k))}</div>
+    <div class="dp-title">${esc(cap(fmtDateLong(keyToTs(k))))}</div>`;
+
+  h += wks.map(workoutSummaryHtml).join('');
+
+  if (mk.t === 'plan' && !wks.length) {
+    h += `<div class="plan-line">📌 У плані: <b>${esc(planned ? planned.d.name : 'тренування')}</b></div>`;
+  }
+
+  if (when === 'future') {
+    h += `<div class="dp-sec">Яке тренування плануєш?</div><div class="chips">`
+      + days.map((x) => dayChip(x, 'planDay', mk.t === 'plan' && mk.did === x.d.id)).join('')
+      + `<button class="chip${mk.t === 'plan' && !mk.did ? ' on' : ''}" data-a="planDay" data-k="${k}">Будь-яке</button>`
+      + `<button class="chip${mk.t === 'rest' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="rest">💤 Відпочинок</button>`
+      + `</div>`;
+    if (!days.length) h += `<p class="muted small">Створи програму у вкладці «Програми», щоб планувати конкретні дні.</p>`;
+  } else {
+    if (when === 'today' && planned && !wks.length) {
+      h += `<button class="btn primary wide" data-a="start" data-pid="${planned.p.id}" data-did="${planned.d.id}">${I.play} Почати ${esc(planned.d.name)}</button>`;
+    }
+    const label = when === 'today' ? (wks.length ? 'Ще одне тренування' : 'Почати тренування') : (wks.length ? 'Додати ще тренування за цей день' : 'Забув записати? Додай тренування за цей день');
+    h += `<div class="dp-sec">${label}</div><div class="chips">`
+      + days.map((x) => dayChip(x, 'startOn', false, '▶ ')).join('')
+      + `<button class="chip" data-a="startOn" data-k="${k}">▶ Без програми</button></div>`;
+    h += `<div class="chips">`
+      + (when === 'past' && !wks.length ? `<button class="chip${mk.t === 'done' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="done">✔ Був у залі</button>` : '')
+      + `<button class="chip${mk.t === 'rest' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="rest">💤 Відпочинок</button>`
+      + (when === 'today' && !wks.length ? `<button class="chip${mk.t === 'plan' ? ' on' : ''}" data-a="planDay" data-k="${k}">📌 В плані</button>` : '')
+      + `</div>`;
+  }
+  h += `<input class="in" data-f="note" data-k="${k}" value="${esc(mk.note || '')}" placeholder="Нотатка: самопочуття, сон, вага…" autocomplete="off">`;
+  return h + '</section>';
+}
+
+/* ---------- Progress ---------- */
 function viewProgress() {
   const rows = S.exercises.map((e) => {
     const ss = sessionsFor(e.id);
@@ -459,11 +707,11 @@ function viewProgress() {
   }).filter(Boolean).sort((a, b) => b.last - a.last);
 
   if (!rows.length) {
-    return { title: 'Прогрес', actions: settingsBtn, body: `<div class="empty"><div class="big-ico">📈</div><p>Після першого тренування тут буде твій прогрес по кожній вправі</p></div>` };
+    return { title: 'Прогрес', actions: settingsBtn, body: `<div class="empty"><div class="big-ico">📈</div><p>Після першого тренування тут буде прогрес по кожній вправі</p></div>` };
   }
   const body = rows.map((r) => `<a class="card row" href="#/progress/${r.e.id}">
       <div><div class="ex-name">${esc(r.e.name)}</div>
-      <div class="muted small">Рекорд ${fmtW(r.best.w)} кг × ${r.best.r} · ${r.n} ${plural(r.n, ['тренування', 'тренування', 'тренувань'])} · ${ago(r.last)}</div></div>
+      <div class="muted small">Рекорд <span class="mono hl">${fmtW(r.best.w)}×${r.best.r}</span> · ${r.n} ${plural(r.n, ['тренування', 'тренування', 'тренувань'])} · ${ago(r.last)}</div></div>
       <span class="go">›</span>
     </a>`).join('');
   return { title: 'Прогрес', actions: settingsBtn, body };
@@ -471,9 +719,9 @@ function viewProgress() {
 
 let metric = 'e1rm';
 const METRICS = {
-  e1rm: { label: '1ПМ', unit: 'кг', val: (sets) => Math.max(...sets.map((s) => e1rm(s.w, s.r))) },
-  max: { label: 'Макс. вага', unit: 'кг', val: (sets) => Math.max(...sets.map((s) => s.w)) },
-  vol: { label: 'Об’єм', unit: 'кг', val: (sets) => sets.reduce((a, s) => a + s.w * s.r, 0) },
+  e1rm: { label: '1ПМ', val: (sets) => Math.max(...sets.map((s) => e1rm(s.w, s.r))) },
+  max: { label: 'Макс. вага', val: (sets) => Math.max(...sets.map((s) => s.w)) },
+  vol: { label: 'Об’єм', val: (sets) => sets.reduce((a, s) => a + s.w * s.r, 0) },
 };
 
 function viewProgressEx(e) {
@@ -492,13 +740,13 @@ function viewProgressEx(e) {
   }
 
   let body = `<div class="seg">${Object.entries(METRICS).map(([k, m]) => `<button class="${k === metric ? 'on' : ''}" data-a="metric" data-m="${k}">${m.label}</button>`).join('')}</div>`;
-  body += `<section class="card">${chartSvg(pts)}
+  body += `<section class="card">${chartSvg(pts, 'кг')}
     ${metric === 'e1rm' ? '<p class="muted small" style="margin-top:6px">1ПМ — розрахунковий максимум на 1 повтор (формула Еплі). Найкраще показує силу, навіть коли змінюєш кількість повторів.</p>' : ''}
   </section>`;
   if (ss.length) {
     body += `<div class="recs">
       <div><b>${fmtW(heavy.w)} × ${heavy.r}</b><span>найбільша вага</span></div>
-      <div><b>${fmtW(Math.round(e1rm(strong.w, strong.r) * 10) / 10)} кг</b><span>1ПМ (${fmtW(strong.w)} × ${strong.r})</span></div>
+      <div><b>${fmtW(round1(e1rm(strong.w, strong.r)))} кг</b><span>1ПМ (${fmtW(strong.w)} × ${strong.r})</span></div>
       <div><b>${reps.r} повт.</b><span>найбільше повторів (${fmtW(reps.w)} кг)</span></div>
       <div><b>${fmtVol(bestVol)}</b><span>найбільший об’єм</span></div>
     </div>`;
@@ -512,121 +760,157 @@ function viewProgressEx(e) {
   return { title: esc(e.name), back: '#/progress', body };
 }
 
-function chartSvg(pts) {
-  if (pts.length < 2) return `<div class="chart-empty muted small">Графік з’явиться після 2+ тренувань з цією вправою</div>`;
-  const W = 340, H = 180, pl = 38, pr = 10, pt = 14, pb = 24;
+function chartSvg(pts, unit) {
+  if (pts.length < 2) return `<div class="chart-empty muted small">Графік з’явиться, коли буде 2+ записи</div>`;
+  const W = 340, H = 170, pl = 36, pr = 10, pt = 14, pb = 24;
   let min = Math.min(...pts.map((p) => p.y)), max = Math.max(...pts.map((p) => p.y));
   if (max === min) { max += 1; min -= 1; }
-  const pad = (max - min) * 0.12; min = Math.max(0, min - pad); max += pad;
+  const pad = (max - min) * 0.15; min = Math.max(0, min - pad); max += pad;
+  const fine = max - min < 8;
+  const fmt = (v) => (fine ? String(round1(v)) : String(Math.round(v)));
   const x = (i) => pl + (i * (W - pl - pr)) / (pts.length - 1);
   const y = (v) => pt + (1 - (v - min) / (max - min)) * (H - pt - pb);
   const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.y).toFixed(1)}`).join('');
   const area = `${line}L${x(pts.length - 1).toFixed(1)},${H - pb}L${x(0).toFixed(1)},${H - pb}Z`;
   const grid = [0, 0.5, 1].map((f) => {
     const v = min + (max - min) * f, yy = y(v).toFixed(1);
-    return `<line x1="${pl}" x2="${W - pr}" y1="${yy}" y2="${yy}" stroke="#2a2440" stroke-dasharray="3 4"/><text x="${pl - 6}" y="${(+yy + 3).toFixed(1)}" text-anchor="end">${Math.round(v)}</text>`;
+    return `<line x1="${pl}" x2="${W - pr}" y1="${yy}" y2="${yy}" class="grid"/><text x="${pl - 6}" y="${(+yy + 3).toFixed(1)}" text-anchor="end">${fmt(v)}</text>`;
   }).join('');
-  const dots = pts.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.y).toFixed(1)}" r="${i === pts.length - 1 ? 4.5 : 3}" fill="${i === pts.length - 1 ? '#00f0ff' : '#120f1c'}" stroke="${i === pts.length - 1 ? '#00f0ff' : '#ff2bd6'}" stroke-width="2"/>`).join('');
-  const lastV = pts[pts.length - 1].y;
+  const li = pts.length - 1;
+  const dots = pts.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.y).toFixed(1)}" r="${i === li ? 5 : 2.6}" class="${i === li ? 'dot-last' : 'dot'}"/>`).join('');
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img">
-    <defs><linearGradient id="ga" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff2bd6" stop-opacity=".35"/><stop offset="1" stop-color="#ff2bd6" stop-opacity="0"/></linearGradient></defs>
     ${grid}
-    <path d="${area}" fill="url(#ga)"/>
-    <path d="${line}" fill="none" stroke="#ff2bd6" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="${area}" fill="url(#gArea)"/>
+    <path d="${line}" fill="none" stroke="url(#gLine)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
     ${dots}
     <text x="${pl}" y="${H - 6}">${fmtShort(pts[0].t)}</text>
-    <text x="${W - pr}" y="${H - 6}" text-anchor="end">${fmtShort(pts[pts.length - 1].t)} · ${fmtW(Math.round(lastV * 10) / 10)} кг</text>
+    <text x="${W - pr}" y="${H - 6}" text-anchor="end">${fmtShort(pts[li].t)} · ${fmt(pts[li].y)} ${unit}</text>
   </svg>`;
 }
 
-/* ---------- Calendar ---------- */
-let cal = null; // { y, m, sel }
-const MARKS = [['plan', '📌', 'План'], ['done', '✔', 'Був у залі'], ['rest', '💤', 'Відпочинок']];
+/* ---------- Body ---------- */
+let bodyMetric = 'weight';
+let bodyDraft = null;
+const bodyVal = (e, f) => { const v = e.v?.[f]; return v == null || v === '' ? null : v; };
+const bodySorted = () => [...S.body].sort((a, b) => b.date - a.date);
 
-function weekStreak() {
-  const weeks = new Set(S.workouts.map((w) => weekStart(w.startedAt)));
-  for (const [k, m] of Object.entries(S.marks)) if (m.t === 'done') weeks.add(weekStart(keyToTs(k)));
-  let w = weekStart(Date.now());
-  if (!weeks.has(w)) w = weekStart(w - 1);
-  let n = 0;
-  while (weeks.has(w)) { n++; w = weekStart(w - 1); }
-  return n;
+function deltaHtml(d, unit, label) {
+  if (d == null) return '';
+  const r = round1(d);
+  const cls = r > 0 ? 'up' : r < 0 ? 'down' : '';
+  return `<span class="delta ${cls}">${r > 0 ? '▲' : r < 0 ? '▼' : '•'} ${fmtW(Math.abs(r))} ${unit}${label ? ` <small>${label}</small>` : ''}</span>`;
 }
 
-function viewCalendar() {
-  const now = new Date();
-  if (!cal) cal = { y: now.getFullYear(), m: now.getMonth(), sel: dkey(Date.now()) };
-  const { y, m } = cal;
-  const todayK = dkey(Date.now());
-  const byDay = {};
-  for (const w of S.workouts) (byDay[dkey(w.startedAt)] ||= []).push(w);
+function viewBody() {
+  const list = bodySorted();
+  const add = `<a class="btn primary sm" href="#/body/new">+ Замір</a>`;
+  if (!list.length) {
+    return {
+      title: 'Тіло', actions: add,
+      body: `<div class="empty"><div class="big-ico">📏</div><p><b>Відстежуй своє тіло</b></p>
+        <p class="small">Вага, обхвати і фото прогресу. Найточніше — раз на 1–2 тижні, зранку натщесерце.</p></div>
+        <a class="btn primary wide" href="#/body/new">Перший замір</a>`,
+    };
+  }
+  const used = BODY_FIELDS.filter(([f]) => list.some((e) => bodyVal(e, f) != null));
+  if (used.length && !used.some(([f]) => f === bodyMetric)) bodyMetric = used[0][0];
+  const [mf, ml, mu] = BODY_FIELDS.find((x) => x[0] === bodyMetric);
+  const series = list.filter((e) => bodyVal(e, mf) != null).reverse();
+  const cur = series[series.length - 1], prev = series[series.length - 2], first = series[0];
 
-  const lead = (new Date(y, m, 1).getDay() + 6) % 7;
-  const days = new Date(y, m + 1, 0).getDate();
-  let cells = '<span class="cd out"></span>'.repeat(lead);
-  let mWk = 0, mDays = 0, mPlan = 0;
-  for (let d = 1; d <= days; d++) {
-    const k = dkey(new Date(y, m, d).getTime());
-    const wks = byDay[k], mk = S.marks[k];
-    if (wks) mWk += wks.length;
-    if (wks || mk?.t === 'done') mDays++;
-    if (mk?.t === 'plan' && k >= todayK) mPlan++;
-    const cls = ['cd', k === todayK && 'today', k === cal.sel && 'sel', wks && 'wk', mk?.t && 'm-' + mk.t, mk?.note && 'note', k < todayK && 'past']
-      .filter(Boolean).join(' ');
-    cells += `<button class="${cls}" data-a="calSel" data-k="${k}">${d}</button>`;
+  let body = '';
+  if (used.length) {
+    body += `<div class="chips scroll">${used.map(([f, l]) => `<button class="chip${f === bodyMetric ? ' on' : ''}" data-a="bodyMetric" data-m="${f}">${l}</button>`).join('')}</div>`;
+    body += `<section class="card hero-metric">
+      <div class="eyebrow">${ml}</div>
+      <div class="big">${cur ? fmtW(cur.v[mf]) : '—'}<small>${mu}</small></div>
+      <div class="deltas">${prev ? deltaHtml(cur.v[mf] - prev.v[mf], mu, 'з минулого') : ''}${first && series.length > 2 ? deltaHtml(cur.v[mf] - first.v[mf], mu, 'від старту') : ''}</div>
+      ${chartSvg(series.map((e) => ({ t: e.date, y: +e.v[mf] })), mu)}
+    </section>`;
+
+    // Latest known value of each measurement + change vs the one before it
+    body += `<h2 class="sec">Поточні показники</h2><div class="bstats">`
+      + used.map(([f, l, u]) => {
+        const [c1, c0] = list.filter((e) => bodyVal(e, f) != null);
+        return `<button class="bs${f === bodyMetric ? ' on' : ''}" data-a="bodyMetric" data-m="${f}"><span>${l}</span><b>${fmtW(c1.v[f])}<small>${u}</small></b>${c0 ? deltaHtml(c1.v[f] - c0.v[f], '') : `<em>${fmtShort(c1.date)}</em>`}</button>`;
+      }).join('') + `</div>`;
   }
 
-  const month = cap(new Date(y, m, 1).toLocaleDateString('uk-UA', { month: 'long', year: 'numeric' }));
-  const isThisMonth = y === now.getFullYear() && m === now.getMonth();
-  const sk = cal.sel, swk = byDay[sk] || [], smk = S.marks[sk] || {};
+  const allPh = list.slice().reverse().flatMap((e) => (e.photos || []).map((id) => ({ id, date: e.date })));
+  if (allPh.length) {
+    body += `<h2 class="sec">Фото прогресу</h2>`;
+    if (allPh.length >= 2) {
+      const a = allPh[0], b = allPh[allPh.length - 1];
+      body += `<div class="compare">
+        <figure data-a="viewPhoto" data-id="${a.id}" data-date="${a.date}"><img data-photo="${a.id}" alt=""><figcaption>До · ${fmtShort(a.date)}</figcaption></figure>
+        <figure data-a="viewPhoto" data-id="${b.id}" data-date="${b.date}"><img data-photo="${b.id}" alt=""><figcaption>Зараз · ${fmtShort(b.date)}</figcaption></figure>
+      </div>`;
+    }
+    body += `<div class="gallery">${allPh.slice().reverse().map((p) => `<button class="ph" data-a="viewPhoto" data-id="${p.id}" data-date="${p.date}"><img data-photo="${p.id}" alt=""></button>`).join('')}</div>`;
+  }
 
-  const body = `<div class="stats">
-      <div><b>${mDays}</b><span>днів у залі</span></div>
-      <div><b>${mPlan}</b><span>заплановано</span></div>
-      <div><b>🔥${weekStreak()}</b><span>тижнів поспіль</span></div>
-    </div>
-    <section class="card cal">
-      <div class="cal-h">
-        <button class="icon-btn" data-a="calNav" data-d="-1" aria-label="Попередній місяць">‹</button>
-        <div class="cal-m">${esc(month)}${isThisMonth ? '' : ' <button class="cal-today" data-a="calToday">сьогодні</button>'}</div>
-        <button class="icon-btn" data-a="calNav" data-d="1" aria-label="Наступний місяць">›</button>
-      </div>
-      <div class="cal-grid">
-        ${['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'].map((d) => `<span class="cal-dow">${d}</span>`).join('')}
-        ${cells}
-      </div>
-      <div class="cal-legend"><span><i class="lg wk"></i>тренування</span><span><i class="lg plan"></i>план</span><span>✔ був</span><span>💤 відпочинок</span></div>
-    </section>
-    <section class="card">
-      <div class="ex-name">${esc(cap(fmtDateLong(keyToTs(sk))))}</div>
-      ${swk.length
-        ? swk.map((w) => { const st = wStats(w); return `<a class="hist-row" href="#/history/${w.id}"><span>🏋️ ${esc(w.title)}</span><span class="r">${st.sets} підх. · ${fmtVol(st.vol)} ›</span></a>`; }).join('')
-        : `<p class="muted small" style="margin-top:4px">${sk > todayK ? 'Можна запланувати тренування' : 'Записаних тренувань немає'}</p>`}
-      <div class="marks">${MARKS.map(([t, i, l]) => `<button class="mk${smk.t === t ? ' on' : ''}" data-a="calMark" data-k="${sk}" data-t="${t}"><b>${i}</b><span>${l}</span></button>`).join('')}</div>
-      <input class="in" data-f="note" data-k="${sk}" value="${esc(smk.note || '')}" placeholder="Нотатка: самопочуття, вага тіла…" autocomplete="off">
-    </section>`;
-  return { title: 'Календар', actions: settingsBtn, body };
+  body += `<h2 class="sec">Усі заміри</h2><section class="card list">${list.map((e) => {
+    const parts = BODY_FIELDS.filter(([f]) => bodyVal(e, f) != null).slice(0, 3).map(([f, l, u]) => `${l.toLowerCase()} ${fmtW(e.v[f])}${u === '%' ? '%' : ''}`);
+    return `<a class="li" href="#/body/${e.id}"><span class="li-date">${esc(fmtDate(e.date))}</span><span class="li-main">${esc(parts.join(' · ') || 'тільки фото')}${e.photos?.length ? ` · 📷${e.photos.length}` : ''}</span><span class="go">›</span></a>`;
+  }).join('')}</section>`;
+
+  return { title: 'Тіло', actions: add, body };
 }
 
+function viewBodyEdit(id) {
+  const ex = id === 'new' ? null : S.body.find((e) => e.id === id);
+  if (id !== 'new' && !ex) return null;
+  const did = ex ? ex.id : 'new';
+  if (!bodyDraft || bodyDraft.id !== did) {
+    bodyDraft = ex
+      ? { id: ex.id, date: dkey(ex.date), v: Object.fromEntries(Object.entries(ex.v || {}).map(([k, v]) => [k, String(v)])), note: ex.note || '', photos: [...(ex.photos || [])] }
+      : { id: 'new', date: dkey(Date.now()), v: {}, note: '', photos: [] };
+  }
+  const others = bodySorted().filter((e) => e.id !== bodyDraft.id);
+  const lastVal = (f) => others.find((e) => bodyVal(e, f) != null)?.v[f];
+  const body = `<section class="card">
+      <label class="field"><span>Дата</span><input type="date" class="in date" data-f="bdate" value="${bodyDraft.date}" max="${dkey(Date.now())}"></label>
+    </section>
+    <section class="card">
+      <div class="bgrid">${BODY_FIELDS.map(([f, l, u]) => `<label class="bf"><span>${l}, ${u}</span>
+        <input class="in num" data-f="bval" data-k="${f}" inputmode="decimal" autocomplete="off" value="${esc(bodyDraft.v[f] ?? '')}" placeholder="${lastVal(f) != null ? fmtW(lastVal(f)) : '—'}"></label>`).join('')}</div>
+      <p class="muted small" style="margin-top:10px">Заповнюй тільки потрібне. Сірим — значення з минулого заміру.</p>
+    </section>
+    <section class="card">
+      <div class="ex-name">Фото</div>
+      <div class="photos">
+        ${bodyDraft.photos.map((pid) => `<div class="ph"><img data-photo="${pid}" alt=""><button class="ph-x" data-a="draftDelPhoto" data-id="${pid}" aria-label="Прибрати фото">✕</button></div>`).join('')}
+        <label class="ph add">${I.camera}<span>Додати</span><input type="file" accept="image/*" multiple data-f="photoIn" hidden></label>
+      </div>
+      <p class="muted small" style="margin-top:10px">Порада: те саме світло, поза й відстань — так різницю видно найкраще. Фото зберігаються тільки на телефоні.</p>
+    </section>
+    <input class="in" data-f="bnote" value="${esc(bodyDraft.note)}" placeholder="Нотатка (необов’язково)" autocomplete="off">
+    <button class="btn primary wide" data-a="saveBody">Зберегти</button>
+    ${ex ? `<button class="btn danger-ghost wide" data-a="delBody" data-id="${ex.id}">Видалити замір</button>` : ''}`;
+  return { title: ex ? 'Замір' : 'Новий замір', back: '#/body', body };
+}
+
+/* ---------- Settings ---------- */
 function viewSettings() {
   const lb = S.settings.lastBackup;
   const body = `<section class="card">
+      <label class="field"><span>Ціль: тренувань на тиждень</span><input class="in num" data-f="goal" inputmode="numeric" value="${S.settings.weekGoal}"></label>
       <label class="field"><span>Відпочинок між підходами, сек</span><input class="in num" data-f="rest" inputmode="numeric" value="${S.settings.rest}"></label>
       <label class="field"><span>Крок ваги для кнопок − / +, кг</span><input class="in num" data-f="step" inputmode="decimal" value="${fmtW(S.settings.step)}"></label>
       <p class="muted small">Таймер відпочинку стартує сам після кожного ✓. Постав 0, щоб вимкнути.</p>
     </section>
     <section class="card">
       <div class="ex-name">Резервна копія</div>
-      <p class="muted small" style="margin-top:4px">Усі дані зберігаються тільки на цьому телефоні. Зберігай копію у «Файли» / iCloud Drive або надсилай собі в Telegram.<br>${lb ? 'Остання копія: ' + fmtDate(lb) + ' (' + ago(lb) + ')' : 'Копій ще не було.'}</p>
+      <p class="muted small" style="margin-top:4px">Усі дані й фото зберігаються тільки на цьому телефоні. Зберігай копію у «Файли» / iCloud Drive або надсилай собі в Telegram.<br>${lb ? 'Остання копія: ' + fmtDate(lb) + ' (' + ago(lb) + ')' : 'Копій ще не було.'}</p>
       <button class="btn primary wide" data-a="export">Зберегти копію</button>
       <button class="btn wide" data-a="import">Відновити з файлу</button>
       <input type="file" id="importFile" accept="application/json,.json" hidden>
     </section>
     <section class="card">
-      <div class="muted small">Тренувань: ${S.workouts.length} · Програм: ${S.programs.length} · Вправ у бібліотеці: ${S.exercises.length}</div>
+      <div class="muted small">Тренувань: ${S.workouts.length} · Замірів: ${S.body.length} · Програм: ${S.programs.length} · Вправ: ${S.exercises.length}</div>
       <button class="btn danger-ghost wide" data-a="resetAll" style="margin-top:8px">Видалити всі дані</button>
     </section>
-    <p class="muted small center">Gym Log · v1.1</p>`;
+    <p class="muted small center">Gym Log · v2.0</p>`;
   return { title: 'Налаштування', back: '#/', body };
 }
 
@@ -642,15 +926,22 @@ function view() {
     case 'programs': return { tab: '/programs', ...viewPrograms() };
     case 'program': { const p = prog(b); if (p) return { tab: '/programs', ...viewProgram(p) }; break; }
     case 'history': {
-      if (!b) return { tab: '/history', ...viewHistory() };
-      const wk = S.workouts.find((w) => w.id === b);
-      if (wk) return { tab: '/history', ...viewWorkoutDetail(wk) };
-      break;
+      const wk = b && S.workouts.find((w) => w.id === b);
+      if (wk) return { tab: '/calendar', ...viewWorkoutDetail(wk) };
+      calInit(); cal.mode = 'list';
+      history.replaceState(null, '', '#/calendar');
+      return { tab: '/calendar', ...viewCalendar() };
     }
     case 'progress': {
       if (!b) return { tab: '/progress', ...viewProgress() };
       const e = exById(b);
       if (e) return { tab: '/progress', ...viewProgressEx(e) };
+      break;
+    }
+    case 'body': {
+      if (!b) return { tab: '/body', ...viewBody() };
+      const v = viewBodyEdit(b);
+      if (v) return { tab: '/body', ...v };
       break;
     }
     case 'settings': return { tab: '', ...viewSettings() };
@@ -660,7 +951,7 @@ function view() {
 }
 
 function navHtml(tab) {
-  const tabs = [['/', 'Тренування', I.dumbbell], ['/calendar', 'Календар', I.cal], ['/programs', 'Програми', I.list], ['/history', 'Історія', I.clock], ['/progress', 'Прогрес', I.chart]];
+  const tabs = [['/', 'Тренування', I.dumbbell], ['/calendar', 'Календар', I.cal], ['/progress', 'Прогрес', I.chart], ['/body', 'Тіло', I.body], ['/programs', 'Програми', I.list]];
   return `<nav class="nav">${tabs.map(([h, l, i]) => `<a href="#${h}" class="${tab === h ? 'on' : ''}">${i}<span>${l}</span></a>`).join('')}</nav>`;
 }
 
@@ -692,6 +983,7 @@ function render() {
     ${restBarHtml()}
     ${banner}
     ${navHtml(v.tab)}`;
+  hydratePhotos();
 }
 
 function go(hash) {
@@ -717,9 +1009,34 @@ function tick() {
 }
 setInterval(tick, 250);
 
+/* ---------- In-app confirm dialog (native confirm() can be blocked on iOS) ---------- */
+function ask(msg, { ok = 'Так', cancel = 'Скасувати', danger = false } = {}) {
+  return new Promise((resolve) => {
+    const el = document.createElement('div');
+    el.className = 'modal dialog-wrap';
+    el.innerHTML = `<div class="dialog" role="alertdialog">
+      <p>${esc(msg).replace(/\n/g, '<br>')}</p>
+      <div class="dialog-a">
+        <button class="btn" data-r="0">${esc(cancel)}</button>
+        <button class="btn ${danger ? 'danger' : 'primary'}" data-r="1">${esc(ok)}</button>
+      </div>
+    </div>`;
+    const done = (v) => { el.remove(); resolve(v); };
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const b = e.target.closest('[data-r]');
+      if (b) done(b.dataset.r === '1');
+      else if (e.target === el) done(false);
+    });
+    document.body.appendChild(el);
+    el.querySelector('[data-r="1"]').focus();
+  });
+}
+
 /* ---------- Exercise picker ---------- */
 let picker = null;
 function openPicker(cb) {
+  closePicker();
   picker = { cb, q: '' };
   const el = document.createElement('div');
   el.id = 'picker';
@@ -747,11 +1064,23 @@ function renderPickerList() {
 }
 function pickDone(ex) { const cb = picker.cb; closePicker(); cb(ex); }
 
+/* ---------- Photo viewer ---------- */
+function openViewer(id, caption) {
+  const el = document.createElement('div');
+  el.className = 'viewer';
+  el.innerHTML = `<img data-photo="${esc(id)}" alt=""><div class="viewer-c">${esc(caption)} · торкнись, щоб закрити</div>`;
+  el.addEventListener('click', (e) => { e.stopPropagation(); el.remove(); });
+  document.body.appendChild(el);
+  hydratePhotos(el);
+}
+
 /* ---------- Backup ---------- */
 async function exportData() {
   S.settings.lastBackup = Date.now();
   save();
-  const json = JSON.stringify(S);
+  const ph = {};
+  try { for (const id of S.body.flatMap((e) => e.photos || [])) { const v = await photos.get(id); if (v) ph[id] = v; } } catch (e) { /* ignore */ }
+  const json = JSON.stringify({ ...S, photos: ph });
   const name = `gym-log-${new Date().toISOString().slice(0, 10)}.json`;
   const file = new File([json], name, { type: 'application/json' });
   try {
@@ -772,16 +1101,21 @@ async function exportData() {
 }
 
 async function importData(file) {
+  let d;
   try {
-    const d = JSON.parse(await file.text());
+    d = JSON.parse(await file.text());
     if (!d || !Array.isArray(d.workouts) || !Array.isArray(d.programs) || !Array.isArray(d.exercises)) throw new Error('bad');
-    if (!confirm(`Відновити копію? (${d.workouts.length} тренувань, ${d.programs.length} програм)\nПоточні дані на телефоні буде замінено.`)) return;
-    const def = defaults();
-    S = { ...def, ...d, settings: { ...def.settings, ...(d.settings || {}) } };
-    save(); go('#/'); toast('✅ Дані відновлено');
   } catch (e) {
     toast('⚠️ Це не схоже на файл копії Gym Log');
+    return;
   }
+  if (!await ask(`Відновити копію?\n${d.workouts.length} тренувань, ${(d.body || []).length} замірів, ${d.programs.length} програм.\nПоточні дані на телефоні буде замінено.`, { ok: 'Відновити', danger: true })) return;
+  const ph = d.photos || {};
+  delete d.photos;
+  try { for (const [id, v] of Object.entries(ph)) await photos.put(id, v); } catch (e) { toast('⚠️ Частину фото не вдалося відновити'); }
+  const def = defaults();
+  S = { ...def, ...d, settings: { ...def.settings, ...(d.settings || {}) } };
+  save(); go('#/'); toast('✅ Дані відновлено');
 }
 
 /* ---------- Toast ---------- */
@@ -799,10 +1133,23 @@ function toast(msg) {
    Actions (event delegation)
    ===================================================================== */
 
+function setMark(k, m) {
+  if (!m.t) { delete m.t; delete m.pid; delete m.did; }
+  if (!m.t && !m.note) delete S.marks[k]; else S.marks[k] = m;
+  save(); render();
+}
+
 const A = {
   // --- home / programs
   start: (d) => { unlockAudio(); startWorkout(d.pid, d.did); },
   startEmpty: () => { unlockAudio(); startWorkout(null, null); },
+  startOn: (d) => { unlockAudio(); startWorkout(d.pid || null, d.did || null, d.k); },
+  goDay: (d) => {
+    calInit();
+    const t = new Date(keyToTs(d.k));
+    Object.assign(cal, { y: t.getFullYear(), m: t.getMonth(), sel: d.k, mode: 'month' });
+    go('#/calendar');
+  },
   addTemplate: () => {
     S.programs.push({
       id: uid(),
@@ -824,9 +1171,9 @@ const A = {
     p.days.push({ id: uid(), name: `День ${p.days.length + 1}`, items: [] });
     save(); render();
   },
-  delDay: (d) => {
+  delDay: async (d) => {
     const p = prog(d.pid), day = p.days[+d.di];
-    if (day.items.length && !confirm(`Видалити день «${day.name}»?`)) return;
+    if (day.items.length && !await ask(`Видалити день «${day.name}»?`, { ok: 'Видалити', danger: true })) return;
     p.days.splice(+d.di, 1); save(); render();
   },
   addItem: (d) => openPicker((ex) => {
@@ -840,9 +1187,9 @@ const A = {
     [items[i], items[j]] = [items[j], items[i]];
     save(); render();
   },
-  delProgram: (d) => {
+  delProgram: async (d) => {
     const p = prog(d.pid);
-    if (!confirm(`Видалити програму «${p.name || 'Без назви'}»?\nІсторія тренувань залишиться.`)) return;
+    if (!await ask(`Видалити програму «${p.name || 'Без назви'}»?\nІсторія тренувань залишиться.`, { ok: 'Видалити', danger: true })) return;
     S.programs = S.programs.filter((x) => x.id !== p.id);
     save(); go('#/programs');
   },
@@ -875,20 +1222,20 @@ const A = {
     save(); render();
   },
   addSet: (d) => { S.active.exercises[+d.ei].sets.push({ w: '', r: '', done: false }); save(); render(); },
-  removeSet: (d) => {
+  removeSet: async (d) => {
     const sets = S.active.exercises[+d.ei].sets;
-    if (sets[sets.length - 1]?.done && !confirm('Останній підхід уже виконано. Видалити його?')) return;
+    if (sets[sets.length - 1]?.done && !await ask('Останній підхід уже виконано. Видалити його?', { ok: 'Видалити', danger: true })) return;
     sets.pop(); save(); render();
   },
-  removeEx: (d) => {
+  removeEx: async (d) => {
     const ax = S.active.exercises[+d.ei];
-    if (ax.sets.some((s) => s.done) && !confirm(`Прибрати «${exName(ax.exerciseId)}» з тренування?`)) return;
+    if (ax.sets.some((s) => s.done) && !await ask(`Прибрати «${exName(ax.exerciseId)}» з тренування?`, { ok: 'Прибрати', danger: true })) return;
     S.active.exercises.splice(+d.ei, 1); save(); render();
   },
   addEx: () => openPicker(addExToWorkout),
   finish: () => finishWorkout(),
-  cancelWorkout: () => {
-    if (!confirm('Скасувати тренування? Його дані не збережуться.')) return;
+  cancelWorkout: async () => {
+    if (!await ask('Скасувати тренування?\nЙого дані не збережуться.', { ok: 'Скасувати тренування', cancel: 'Назад', danger: true })) return;
     S.active = null; save(); render();
   },
   restAdj: (d) => {
@@ -901,28 +1248,65 @@ const A = {
   restSkip: () => { S.active.restEnd = null; save(); $('#rest')?.remove(); },
 
   // --- calendar
+  calMode: (d) => { cal.mode = d.m; render(); },
   calNav: (d) => {
     cal.m += +d.d;
     if (cal.m < 0) { cal.m = 11; cal.y--; }
     if (cal.m > 11) { cal.m = 0; cal.y++; }
     render();
   },
-  calToday: () => { cal = null; render(); },
+  calToday: () => { const mode = cal.mode; cal = null; calInit(); cal.mode = mode; render(); },
   calSel: (d) => { cal.sel = d.k; render(); },
   calMark: (d) => {
-    const m = S.marks[d.k] || {};
+    const m = { ...(S.marks[d.k] || {}) };
     m.t = m.t === d.t ? undefined : d.t;
-    if (!m.t && !m.note) delete S.marks[d.k]; else S.marks[d.k] = m;
-    save(); render();
+    delete m.pid; delete m.did;
+    setMark(d.k, m);
+  },
+  planDay: (d) => {
+    const m = { ...(S.marks[d.k] || {}) };
+    const same = m.t === 'plan' && (m.did || null) === (d.did || null);
+    if (same) m.t = undefined;
+    else { m.t = 'plan'; m.pid = d.pid || null; m.did = d.did || null; }
+    setMark(d.k, m);
   },
 
   // --- history / progress
-  delWorkout: (d) => {
-    if (!confirm('Видалити це тренування назавжди?')) return;
+  delWorkout: async (d) => {
+    if (!await ask('Видалити це тренування назавжди?', { ok: 'Видалити', danger: true })) return;
     S.workouts = S.workouts.filter((w) => w.id !== d.id);
-    save(); go('#/history');
+    save(); go('#/calendar');
   },
   metric: (d) => { metric = d.m; render(); },
+
+  // --- body
+  bodyMetric: (d) => { bodyMetric = d.m; render(); },
+  viewPhoto: (d) => openViewer(d.id, cap(fmtDateLong(+d.date))),
+  draftDelPhoto: (d) => { bodyDraft.photos = bodyDraft.photos.filter((p) => p !== d.id); render(); },
+  saveBody: async () => {
+    const v = {};
+    for (const [f] of BODY_FIELDS) { const n = num(bodyDraft.v[f]); if (n != null && n > 0) v[f] = n; }
+    if (!Object.keys(v).length && !bodyDraft.photos.length) { toast('Введи хоча б один замір або додай фото'); return; }
+    const date = keyToTs(bodyDraft.date || dkey(Date.now())) + 12 * 3600e3;
+    const note = bodyDraft.note.trim();
+    if (bodyDraft.id === 'new') {
+      S.body.push({ id: uid(), date, v, note, photos: bodyDraft.photos });
+    } else {
+      const e = S.body.find((x) => x.id === bodyDraft.id);
+      for (const p of (e.photos || [])) if (!bodyDraft.photos.includes(p)) photos.del(p).catch(() => {});
+      Object.assign(e, { date, v, note, photos: bodyDraft.photos });
+    }
+    bodyDraft = null;
+    save(); go('#/body'); toast('✅ Замір збережено');
+  },
+  delBody: async (d) => {
+    if (!await ask('Видалити цей замір разом із фото?', { ok: 'Видалити', danger: true })) return;
+    const e = S.body.find((x) => x.id === d.id);
+    for (const p of (e?.photos || [])) photos.del(p).catch(() => {});
+    S.body = S.body.filter((x) => x.id !== d.id);
+    bodyDraft = null;
+    save(); go('#/body');
+  },
 
   // --- picker
   pick: (d) => pickDone(exById(d.id)),
@@ -932,8 +1316,9 @@ const A = {
   // --- settings
   export: () => exportData(),
   import: () => $('#importFile').click(),
-  resetAll: () => {
-    if (!confirm('Видалити ВСІ дані: програми, історію, рекорди?\nЦе не можна скасувати.')) return;
+  resetAll: async () => {
+    if (!await ask('Видалити ВСІ дані: програми, історію, заміри, фото?\nЦе не можна скасувати.', { ok: 'Видалити все', danger: true })) return;
+    try { for (const k of await photos.keys()) await photos.del(k); } catch (e) { /* ignore */ }
     S = defaults(); save(); go('#/'); toast('Дані видалено');
   },
 };
@@ -943,7 +1328,10 @@ document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-a]');
   if (!b || b.disabled) return;
   const fn = A[b.dataset.a];
-  if (fn) { e.preventDefault(); fn(b.dataset, b); }
+  if (fn) {
+    e.preventDefault();
+    Promise.resolve(fn(b.dataset, b)).catch((err) => { console.error(err); toast('⚠️ Помилка: ' + err.message); });
+  }
 });
 
 document.addEventListener('input', (e) => {
@@ -964,14 +1352,18 @@ document.addEventListener('input', (e) => {
       it[f === 'isets' ? 'sets' : 'reps'] = Number.isFinite(n) && n > 0 ? n : null;
       break;
     }
+    case 'goal': { const n = parseInt(v, 10); if (n >= 1 && n <= 7) S.settings.weekGoal = n; break; }
     case 'rest': { const n = parseInt(v, 10); if (Number.isFinite(n) && n >= 0) S.settings.rest = Math.min(n, 900); break; }
     case 'step': { const n = num(v); if (n > 0) S.settings.step = n; break; }
     case 'note': {
-      const m = S.marks[d.k] || {};
+      const m = { ...(S.marks[d.k] || {}) };
       m.note = v;
       if (!m.t && !m.note) delete S.marks[d.k]; else S.marks[d.k] = m;
       break;
     }
+    case 'bval': if (bodyDraft) bodyDraft.v[d.k] = v; return;
+    case 'bnote': if (bodyDraft) bodyDraft.note = v; return;
+    case 'bdate': if (bodyDraft && v) bodyDraft.date = v; return;
     case 'pq': picker.q = v; renderPickerList(); return;
   }
   save();
@@ -986,16 +1378,39 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && picker) closePicker();
 });
 
-document.addEventListener('change', (e) => {
-  if (e.target.id === 'importFile' && e.target.files[0]) importData(e.target.files[0]);
+document.addEventListener('change', async (e) => {
+  const t = e.target;
+  if (t.id === 'importFile' && t.files[0]) importData(t.files[0]);
+  if (t.dataset.f === 'photoIn' && t.files.length && bodyDraft) {
+    const files = [...t.files];
+    toast(`Обробка фото… (${files.length})`);
+    for (const f of files) {
+      try {
+        const data = await compressImage(f);
+        const pid = 'p' + uid();
+        await photos.put(pid, data);
+        bodyDraft.photos.push(pid);
+      } catch (err) { toast('⚠️ Не вдалося додати фото'); }
+    }
+    render();
+  }
 });
 
 window.addEventListener('hashchange', () => { closePicker(); render(); window.scrollTo(0, 0); });
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); tick(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
 
 /* ---------- Boot ---------- */
 render();
 navigator.storage?.persist?.().catch(() => {});
+
+// Remove photos that no measurement references (e.g. an abandoned draft).
+(async () => {
+  try {
+    const used = new Set(S.body.flatMap((e) => e.photos || []));
+    for (const k of await photos.keys()) if (!used.has(k)) await photos.del(k);
+  } catch (e) { /* IndexedDB unavailable */ }
+})();
+
 if ('serviceWorker' in navigator && !['localhost', '127.0.0.1'].includes(location.hostname)) {
   // When a new version is deployed, reload once so the update shows up immediately.
   if (navigator.serviceWorker.controller) {
