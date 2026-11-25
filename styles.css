@@ -400,3 +400,9 @@ svg.i { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round
   width: max-content; max-width: calc(100vw - 32px); text-align: center;
 }
 #toast.show { transform: translate(-50%, 0); }
+
+/* Home → calendar link, empty-program hint */
+.hero-link { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 11px 14px; border-radius: 16px; background: rgba(255, 255, 255, .06); font-size: 15px; font-weight: 650; }
+.hero-link svg { width: 20px; height: 20px; color: var(--cyan); }
+.hero-link span:not(.go) { flex: 1; }
+.hint-box { margin-top: 14px; padding: 13px 14px; border-radius: 16px; background: rgba(139, 92, 255, .12); border: 1px dashed rgba(139, 92, 255, .5); font-size: 14px; line-height: 1.45; }

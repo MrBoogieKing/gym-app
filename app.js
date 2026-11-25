@@ -399,13 +399,14 @@ function viewHome() {
 
   let body = `<section class="card hero">
     <div class="hero-top">
-      <div class="hero-txt">
+      <a class="hero-txt" href="#/calendar">
         <div class="eyebrow">${esc(cap(fmtDateLong(now)))}</div>
         <div class="hero-title">${esc(headline)}</div>
-      </div>
-      ${ring(weekDays.size, S.settings.weekGoal || 3)}
+      </a>
+      <a href="#/calendar" aria-label="Відкрити календар">${ring(weekDays.size, S.settings.weekGoal || 3)}</a>
     </div>
     <div class="week">${strip}</div>
+    <a class="hero-link" href="#/calendar">${I.cal}<span>Відкрити календар</span><span class="go">›</span></a>
     ${planned && !doneToday ? `<button class="btn primary wide" data-a="start" data-pid="${planned.p.id}" data-did="${planned.d.id}">${I.play} Почати ${esc(planned.d.name)}</button>` : ''}
   </section>`;
 
@@ -645,7 +646,7 @@ function viewCalendar() {
         ${['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Нд'].map((d) => `<span class="cal-dow">${d}</span>`).join('')}
         ${cells}
       </div>
-      <div class="cal-legend"><span><i class="lg wk"></i>тренування</span><span><i class="lg plan"></i>план</span><span><i class="lg done"></i>був</span><span><i class="lg rest"></i>відпочинок</span></div>
+      <div class="cal-legend"><span><i class="lg wk"></i>тренування</span><span><i class="lg plan"></i>заплановано</span><span><i class="lg done"></i>був</span><span><i class="lg rest"></i>відпочинок</span></div>
     </section>
     ${dayPanelHtml(cal.sel, byDay)}`;
   return { title: 'Календар', actions: settingsBtn, body };
@@ -674,10 +675,9 @@ function dayPanelHtml(k, byDay) {
   if (when === 'future') {
     h += `<div class="dp-sec">Яке тренування плануєш?</div><div class="chips">`
       + days.map((x) => dayChip(x, 'planDay', mk.t === 'plan' && mk.did === x.d.id)).join('')
-      + `<button class="chip${mk.t === 'plan' && !mk.did ? ' on' : ''}" data-a="planDay" data-k="${k}">Будь-яке</button>`
+      + `<button class="chip${mk.t === 'plan' && !mk.did ? ' on' : ''}" data-a="planDay" data-k="${k}">📌 Будь-яке</button>`
       + `<button class="chip${mk.t === 'rest' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="rest">💤 Відпочинок</button>`
       + `</div>`;
-    if (!days.length) h += `<p class="muted small">Створи програму у вкладці «Програми», щоб планувати конкретні дні.</p>`;
   } else {
     if (when === 'today' && planned && !wks.length) {
       h += `<button class="btn primary wide" data-a="start" data-pid="${planned.p.id}" data-did="${planned.d.id}">${I.play} Почати ${esc(planned.d.name)}</button>`;
@@ -689,8 +689,11 @@ function dayPanelHtml(k, byDay) {
     h += `<div class="chips">`
       + (when === 'past' && !wks.length ? `<button class="chip${mk.t === 'done' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="done">✔ Був у залі</button>` : '')
       + `<button class="chip${mk.t === 'rest' ? ' on' : ''}" data-a="calMark" data-k="${k}" data-t="rest">💤 Відпочинок</button>`
-      + (when === 'today' && !wks.length ? `<button class="chip${mk.t === 'plan' ? ' on' : ''}" data-a="planDay" data-k="${k}">📌 В плані</button>` : '')
       + `</div>`;
+  }
+  if (!days.length) {
+    h += `<div class="hint-box">Щоб тут з’явились <b>Push / Pull / Legs</b> чи твої дні — спершу додай програму.
+      <div class="chips"><button class="chip on" data-a="addTemplate">+ Приклад Push / Pull / Legs</button><button class="chip" data-a="newProgram">Створити свою</button></div></div>`;
   }
   h += `<input class="in" data-f="note" data-k="${k}" value="${esc(mk.note || '')}" placeholder="Нотатка: самопочуття, сон, вага…" autocomplete="off">`;
   return h + '</section>';
